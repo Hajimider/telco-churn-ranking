@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# Local datasets and generated reports
+data/*.csv
+data/*.parquet
+data/*.xlsx
+outputs/*
+!outputs/project_v1/
+!outputs/project_v1/**
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+Thumbs.db
