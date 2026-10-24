@@ -12,7 +12,7 @@
 
 ## Next Step
 
-编码与测试已完成；2026-10-23 按用户要求调整为正式项目展示，并修复旧报告目录缺少分群文件导致的看板异常。正式入口为 `run_project.py`，最新真实运行结果写入 `outputs/project_v1/`。独立审查仍待用户明确指示，不自动进入。
+原项目编码与测试已完成。当前新增 AI 增强处于规划完成、编码未开始状态；设计文档为 docs/superpowers/specs/2026-10-25-churn-ai-enhancement-design.md。等待用户明确下达编码指令。
 
 ## Decisions
 
@@ -75,3 +75,32 @@
 - 测试集与高级项目来自相同公开数据且已被开发接触，报告中明确不是盲测证据。
 - 随机基线使用可解释的数学期望，不进行额外模拟，不宣称实际随机触达效果。
 - 训练集 CV AP 只用于模型比较；固定测试集只用于最终公开基准与预先规定的预算策略对照。
+
+## AI 增强规划（2026-10-25）
+
+### Goal
+
+在现有“分群—模型验证—固定容量排序”基础上增加 AI 风险解读页：统计模型继续负责风险排序，AI 只根据白名单客户特征和排序证据生成中文风险摘要、证据说明和不超过三条触达建议。无 API 时使用确定性模板，配置 OpenAI 兼容接口后可选用模型生成。
+
+### Scope
+
+- 新增 ai_customer_context.csv，只包含训练集交叉验证选出的主模型在固定 10% 优先名单中的白名单特征、排序分数、分群基准和规则证据；actual_churn 不进入 AI 上下文。
+- 新增 ai_assistant.py，提供本地模板 Provider、可选 OpenAI 兼容 Provider、超时和异常回退。
+- dashboard.py 新增“AI风险解读”页，默认不自动调用接口，不展示 JSON，不自动训练。
+- 更新 README、项目讲解材料、环境变量示例和截图。
+- 扩展测试，覆盖白名单、标签隔离、模板稳定性、接口失败回退和无 API 看板启动。
+
+### Milestones
+
+- [complete] 规划：形成 AI 增强设计、边界、风险和验收标准。
+- [pending] 编码与测试：按设计实现上下文、Provider、看板和文档，运行回归测试与真实数据验证。
+- [pending] 独立审查：检查提示词边界、标签泄漏、外部接口失败处理和看板回归。
+
+### Preferred implementation
+
+推荐使用当前模型完成编码与测试，原因是需要同时修改 Python 报告流程、Streamlit 页面、测试和中文文档；若当前模型不可用，再由用户手动切换到当前环境可确认的同等代码模型。独立审查阶段优先使用与编码阶段不同的可用模型；模型列表、价格和额度本轮未核实。
+
+### Coding handoff
+
+编码阶段读取 docs/superpowers/specs/2026-10-25-churn-ai-enhancement-design.md、task_plan.md、README.md、churn_pipeline.py、dashboard.py 和 tests/test_project.py。先实现模板模式和测试，再接入可选 HTTP Provider，最后更新文档和截图。不要修改高级项目 churn_prediction/，不要保存密钥，不要把真实流失标签传入 AI。
+
