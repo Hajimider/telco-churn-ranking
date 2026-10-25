@@ -40,6 +40,10 @@ REQUIRED_COLUMNS = {
 }
 CATEGORICAL_COLUMNS = [column for column in sorted(REQUIRED_COLUMNS - {"customerID", "Churn"})
                        if column not in NUMERIC_COLUMNS]
+AI_CONTEXT_COLUMNS = [
+    "tenure", "Contract", "MonthlyCharges", "InternetService", "PaymentMethod",
+    "TechSupport", "OnlineSecurity",
+]
 
 
 def prepare_data(frame):
@@ -134,6 +138,75 @@ def evaluate_policy(name, labels, ids, scores, budget_count):
     }, order
 
 
+def _tenure_group(value):
+    if value <= 12:
+        return "1-12 个月"
+    if value <= 24:
+        return "13-24 个月"
+    if value <= 48:
+        return "25-48 个月"
+    return "49 个月及以上"
+
+
+def _monthly_group(value):
+    if value < 35:
+        return "低于 35"
+    if value < 70:
+        return "35-69.99"
+    return "70 及以上"
+
+
+def build_ai_context(X_test, test_ids, selected_model, scores, order, budget_count, segments, overall):
+    """生成只含白名单字段的主模型优先名单，隔离测试集真实标签。"""
+    rate_maps = {
+        dimension: group.set_index("分群")["流失率"].to_dict()
+        for dimension, group in segments.groupby("分群维度")
+    }
+    overall_rate = float(overall.iloc[0]["流失率"])
+    rows = []
+    for rank, position in enumerate(order[:budget_count], start=1):
+        values = X_test.iloc[position]
+        tenure = float(values["tenure"])
+        monthly_charges = float(values["MonthlyCharges"])
+        contract = str(values["Contract"])
+        contract_rate = float(rate_maps.get("合同类型", {}).get(contract, overall_rate))
+        tenure_rate = float(rate_maps.get("在网时长", {}).get(_tenure_group(tenure), overall_rate))
+        monthly_rate = float(rate_maps.get("月费区间", {}).get(
+            _monthly_group(monthly_charges), overall_rate))
+        score = float(scores[position])
+        evidence = []
+        if score >= 0.7:
+            evidence.append("主模型排序分数较高")
+        if contract == "Month-to-month":
+            evidence.append("月付合同")
+        if tenure <= 12:
+            evidence.append("在网时间较短")
+        if monthly_charges >= 70:
+            evidence.append("月费处于较高区间")
+        if contract_rate > overall_rate:
+            evidence.append(f"合同类型历史流失率较高（{contract_rate:.1%}）")
+        if tenure_rate > overall_rate:
+            evidence.append(f"在网时长分组历史流失率较高（{tenure_rate:.1%}）")
+        if monthly_rate > overall_rate:
+            evidence.append(f"月费分组历史流失率较高（{monthly_rate:.1%}）")
+        rows.append({
+            "customerID": str(test_ids.iloc[position]),
+            "model_name": selected_model,
+            "rank": rank,
+            "risk_score": score,
+            **{column: values[column] for column in AI_CONTEXT_COLUMNS},
+            "contract_churn_rate": contract_rate,
+            "tenure_group_churn_rate": tenure_rate,
+            "monthly_group_churn_rate": monthly_rate,
+            "risk_evidence": "；".join(evidence) or "进入主模型固定容量优先名单",
+        })
+    return pd.DataFrame(rows, columns=[
+        "customerID", "model_name", "rank", "risk_score", *AI_CONTEXT_COLUMNS,
+        "contract_churn_rate", "tenure_group_churn_rate",
+        "monthly_group_churn_rate", "risk_evidence",
+    ])
+
+
 def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
     """交叉验证候选模型，并在固定测试集评估模型和触达排序。"""
     if not 0.1 <= test_size <= 0.5:
@@ -206,6 +279,21 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
     (output / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
 
     budget_count = int(len(y_test) * metrics["名额比例"])
+    selected_probability = fitted[selected_model][1]
+    selected_order = np.lexsort((test_ids.to_numpy(dtype=str), -selected_probability))
+    ai_context = build_ai_context(
+        X_test, test_ids, selected_model, selected_probability, selected_order,
+        budget_count, segments, overall)
+    ai_context.to_csv(output / "ai_customer_context.csv", index=False, encoding="utf-8-sig")
+    metrics["AI上下文"] = {
+        "主模型": selected_model,
+        "优先客户数": int(len(ai_context)),
+        "字段": list(ai_context.columns),
+        "不含真实流失标签": True,
+    }
+    (output / "metrics.json").write_text(
+        json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+
     policy_rows = []
     assignment_rows = []
     for model_name, (_, probability, _) in fitted.items():

@@ -3,24 +3,40 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local IDE and operating-system files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
 
 # Local configuration and secrets
 .env
 .env.*
 !.env.example
-.vscode/
-.idea/
+.streamlit/secrets.toml
 
 # Local datasets and generated reports
 data/*.csv
 data/*.parquet
 data/*.xlsx
 outputs/*
-!outputs/project_v1/
-!outputs/project_v1/**
+
+# Local model artifacts and databases
+*.pkl
+*.pickle
+*.joblib
+*.sqlite
+*.sqlite3
+*.db
 
 # Logs and temporary files
 *.log
 *.tmp
 *.bak
-Thumbs.db
+*.cache
+*.pid

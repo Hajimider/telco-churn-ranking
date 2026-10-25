@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import churn_pipeline as pipeline
+import ai_assistant
 from churn_pipeline import analyze_segments, evaluate_policy, prepare_data, run_pipeline
 
 
@@ -89,6 +91,10 @@ def test_run_pipeline_writes_results(monkeypatch):
         assignments = pd.read_csv(output / "policy_assignments.csv", dtype={"customerID": "string"})
         assert assignments.groupby("策略").size().le(int(len(predictions) * 0.1)).all()
         assert len(pd.read_csv(output / "policy_metrics.csv")) == 4
+        ai_context = pd.read_csv(output / "ai_customer_context.csv")
+        assert len(ai_context) == int(len(predictions) * 0.1)
+        assert "actual_churn" not in ai_context.columns
+        assert ai_context["model_name"].iloc[0] == metrics["交叉验证"]["选择模型"]
         segments = pd.read_csv(output / "segment_summary.csv")
         assert segments["客户数"].sum() >= metrics["训练集样本数"]
         assert (output / "overall_summary.csv").is_file()
@@ -131,8 +137,27 @@ def test_dashboard_renders_chinese_headers(monkeypatch):
         app = AppTest.from_file(str(ROOT / "dashboard.py")).run(timeout=30)
         assert not app.exception and not app.error
         assert app.title[0].value == "电信客户流失分析与用户排序"
-        assert {tab.label for tab in app.tabs} == {"客户差异", "模型验证", "触达排序"}
-        assert app.dataframe[0].value.columns[0] == "客户数"
+        assert app.radio[0].options == ["客户差异", "模型验证", "触达排序", "AI风险解读"]
+        assert any("客户数" in item.value and "流失率" in item.value for item in app.markdown)
+
+
+def test_dashboard_ai_button_renders_offline_explanation(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("CHURN_AI_BASE_URL", "")
+    monkeypatch.setenv("CHURN_AI_MODEL", "")
+    with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+        output = Path(directory) / "outputs"
+        run_pipeline(sample_data(), output)
+        monkeypatch.setattr(sys, "argv", ["dashboard.py", "--output", str(output)])
+        app = AppTest.from_file(str(ROOT / "dashboard.py")).run(timeout=30)
+        app.radio[0].set_value("AI风险解读").run(timeout=30)
+        assert not app.exception and app.button[0].label == "生成 AI 风险解读"
+        app.button[0].click().run(timeout=30)
+        assert not app.exception
+        rendered = "\n".join(item.value for item in app.markdown)
+        assert "风险摘要" in rendered and "风险证据" in rendered and "建议动作" in rendered
+        assert any("离线模板模式" in item.value for item in app.caption)
 
 
 @pytest.fixture(scope="module")
@@ -157,8 +182,9 @@ def test_dashboard_selects_complete_report(report_project, monkeypatch, argument
     monkeypatch.chdir(ROOT.parent)
     app = AppTest.from_file(str(report_project / "dashboard.py")).run(timeout=30)
     assert not app.exception and not app.error
-    assert Path(app.selectbox[0].value) == report_project / "outputs" / "current"
-    assert len(app.dataframe) == 6
+    report_selector = next(item for item in app.selectbox if item.label == "分析报告")
+    assert Path(report_selector.value) == report_project / "outputs" / "current"
+    assert app.radio[0].options == ["客户差异", "模型验证", "触达排序", "AI风险解读"]
     if "outputs/run_01" in arguments:
         assert any("不包含完整" in item.value for item in app.info)
     assert "实习" not in app.caption[0].value
@@ -185,3 +211,74 @@ def test_dashboard_rejects_missing_output_argument(monkeypatch):
     app = AppTest.from_file(str(ROOT / "dashboard.py")).run(timeout=30)
     assert not app.exception
     assert "结果目录参数有误" in app.error[0].value
+
+
+def test_ai_prompt_and_template_exclude_evaluation_label(monkeypatch):
+    context = {
+        "customerID": "C001",
+        "model_name": "逻辑回归",
+        "rank": 1,
+        "risk_score": 0.82,
+        "Contract": "Month-to-month",
+        "TechSupport": "No",
+        "actual_churn": "已流失标签不应出现",
+    }
+    prompt = ai_assistant.build_prompt(context)
+    assert "actual_churn" not in prompt
+    assert "已流失标签不应出现" not in prompt
+    monkeypatch.setenv("CHURN_AI_BASE_URL", "")
+    monkeypatch.setenv("CHURN_AI_MODEL", "")
+    result = ai_assistant.generate_explanation(context)
+    assert result["mode"] == "离线模板模式"
+    assert result["evidence"]
+    assert result["actions"]
+
+
+def test_ai_project_env_loader_preserves_existing_environment(monkeypatch):
+    with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+        env_file = Path(directory) / ".env"
+        env_file.write_text(
+            'CHURN_AI_BASE_URL="https://example.test/v1"\n'
+            "CHURN_AI_MODEL=demo-model\n"
+            "CHURN_AI_API_KEY=from-file\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("CHURN_AI_BASE_URL", raising=False)
+        monkeypatch.delenv("CHURN_AI_MODEL", raising=False)
+        monkeypatch.setenv("CHURN_AI_API_KEY", "from-environment")
+        ai_assistant._load_project_env(env_file)
+        assert os.environ["CHURN_AI_BASE_URL"] == "https://example.test/v1"
+        assert os.environ["CHURN_AI_MODEL"] == "demo-model"
+        assert os.environ["CHURN_AI_API_KEY"] == "from-environment"
+
+
+def test_ai_remote_failure_falls_back_to_template(monkeypatch):
+    monkeypatch.setenv("CHURN_AI_BASE_URL", "https://example.invalid/v1")
+    monkeypatch.setenv("CHURN_AI_MODEL", "test-model")
+    monkeypatch.setenv("CHURN_AI_TIMEOUT_SECONDS", "1")
+
+    def fail(*args, **kwargs):
+        raise ai_assistant.urllib_error.URLError("offline")
+
+    monkeypatch.setattr(ai_assistant.urllib_request, "urlopen", fail)
+    result = ai_assistant.generate_explanation({"risk_score": 0.8, "rank": 1})
+    assert result["mode"] == "远程接口不可用，已回退模板"
+
+
+def test_ai_incomplete_remote_response_falls_back_to_template(monkeypatch):
+    monkeypatch.setenv("CHURN_AI_BASE_URL", "https://example.invalid/v1")
+    monkeypatch.setenv("CHURN_AI_MODEL", "test-model")
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"{\\"summary\\":\\"summary only\\"}"}}]}'
+
+    monkeypatch.setattr(ai_assistant.urllib_request, "urlopen", lambda *args, **kwargs: Response())
+    result = ai_assistant.generate_explanation({"risk_score": 0.8, "rank": 1})
+    assert result["mode"] == "远程接口不可用，已回退模板"
