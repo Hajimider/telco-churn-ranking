@@ -1,4 +1,4 @@
-"""客户流失项目的 AI 风险解读：远程兼容接口 + 本地模板兜底。"""
+"""根据客户排序证据生成解读；接口不可用时使用离线模板。"""
 import json
 import os
 from pathlib import Path
@@ -7,7 +7,7 @@ from urllib import request as urllib_request
 
 
 def _load_project_env(path=None):
-    """读取项目根目录 .env；已有系统环境变量优先，密钥不会写回文件。"""
+    """加载项目 .env，保留进程中已有的配置。"""
     env_path = Path(path) if path is not None else Path(__file__).resolve().parent / ".env"
     if not env_path.is_file():
         return
@@ -31,7 +31,7 @@ def _load_project_env(path=None):
         os.environ[key] = value
 
 
-# Streamlit 和命令行都会先导入本模块；因此项目 .env 无需额外安装 python-dotenv。
+# 只读取 CHURN_AI_ 配置，不加载其他环境变量。
 _load_project_env()
 
 
@@ -144,22 +144,18 @@ def _parse_model_response(payload):
     if not isinstance(content, str) or not content.strip():
         raise ValueError("接口响应没有文本内容")
     text = content.strip()
-    if text.startswith(chr(96) * 3):
-        text = text.strip(chr(96))
+    if text.startswith("```"):
+        text = text.strip("`")
         if text.startswith("json"):
             text = text[4:].lstrip()
-    try:
-        result = json.loads(text)
-    except json.JSONDecodeError:
-        result = {"summary": content}
+    result = json.loads(text)
     if not isinstance(result, dict):
         raise ValueError("接口响应不是对象")
     summary = str(result.get("summary", "")).strip()
     evidence = _as_list(result.get("evidence"))
     actions = _as_list(result.get("actions"))[:3]
     limitations = str(result.get("limitations", "")).strip()
-    # 远程接口返回半截 JSON、缺字段或空数组时，不能把不完整内容直接展示给用户。
-    # 抛出 ValueError 由 generate_explanation 统一回退到确定性模板。
+    # 缺字段或空列表都交给调用方回退模板。
     if not summary or not evidence or not actions or not limitations:
         raise ValueError("接口响应缺少完整的风险解读字段")
     return {
@@ -181,7 +177,7 @@ def _as_list(value):
 
 
 def generate_explanation(context):
-    """优先调用已配置的远程兼容接口，失败时稳定回退到模板。"""
+    """调用远程接口；配置缺失或调用失败时返回模板解读。"""
     base_url = os.getenv("CHURN_AI_BASE_URL", "").strip()
     model = os.getenv("CHURN_AI_MODEL", "").strip()
     if not base_url or not model:

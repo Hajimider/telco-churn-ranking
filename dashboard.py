@@ -13,6 +13,8 @@ import pandas as pd
 import streamlit as st
 from sklearn.metrics import auc, confusion_matrix, roc_curve
 
+from ai_assistant import generate_explanation
+
 
 def configure_chart_font():
     """优先使用系统中文字体，避免中文轴标签被 Matplotlib 渲染成方框。"""
@@ -30,8 +32,6 @@ def configure_chart_font():
 
 
 configure_chart_font()
-
-from ai_assistant import generate_explanation
 
 ROOT = Path(__file__).resolve().parent
 REPORT_FILES = (
@@ -64,10 +64,15 @@ AI_FIELD_LABELS = {
     "tenure_group_churn_rate": "在网时长分组历史流失率",
     "monthly_group_churn_rate": "月费分组历史流失率", "risk_evidence": "风险证据",
 }
+POLICY_METRIC_LABELS = {
+    "Precision@K": "优先名单命中率",
+    "Recall@K": "流失客户覆盖率",
+    "Lift@K": "相对随机提升倍数",
+}
 
 
 def inject_styles():
-    """风险工作台视觉令牌：不改变 Streamlit 组件和业务计算。"""
+    """设置看板样式，包括浅色控件和中文标签颜色。"""
     st.markdown(
         """
         <style>
@@ -131,6 +136,24 @@ def inject_styles():
         [data-testid="stRadio"] label p, [data-testid="stRadio"] label span { color:var(--navy) !important; }
         [data-testid="stRadio"] label:has(input:checked) { background:#e7f0ec; border-color:#76a99e; color:var(--teal) !important; }
         [data-testid="stRadio"] label:has(input:checked) p, [data-testid="stRadio"] label:has(input:checked) span { color:var(--teal) !important; }
+        .st-key-analysis_navigation [role="radiogroup"] { flex-direction:column; gap:.5rem; }
+        .st-key-analysis_navigation label { width:100%; box-sizing:border-box; }
+        .st-key-ai-summary, .st-key-ai-evidence, .st-key-ai-actions, .st-key-ai-limitations {
+            background:var(--surface); border-color:var(--line) !important; border-radius:.75rem;
+        }
+        .st-key-ai-summary { border-left:4px solid var(--teal) !important; }
+        .st-key-ai-actions { background:#eef5f1; }
+        .st-key-ai-limitations { background:#f8f4ec; }
+        .st-key-ai-analysis { font-family:"Microsoft YaHei", "Noto Sans SC", sans-serif; }
+        .st-key-ai-analysis [data-testid="stMarkdownContainer"] { margin-bottom:0 !important; }
+        .st-key-ai-analysis .ai-analysis-title { color:var(--navy); font-family:inherit; font-size:1rem; font-weight:750; line-height:1.5; margin:0 0 .65rem; padding:0; }
+        .st-key-ai-analysis .ai-analysis-text, .st-key-ai-analysis .ai-analysis-list { color:var(--ink); font-family:inherit; font-size:.95rem; line-height:1.85; overflow-wrap:anywhere; }
+        .st-key-ai-analysis .ai-analysis-text { margin:0; white-space:pre-line; }
+        .st-key-ai-analysis .ai-analysis-list { width:100%; box-sizing:border-box; margin:0; padding-left:1.25rem; }
+        .ai-analysis-list li { padding:.65rem .1rem; border-bottom:1px solid var(--line); white-space:pre-line; }
+        .ai-analysis-list li:first-child { padding-top:0; }
+        .ai-analysis-list li:last-child { border-bottom:0; padding-bottom:0; }
+        .ai-analysis-list li::marker { color:var(--teal); }
         [data-testid="stSelectbox"] [data-baseweb="select"],
         [data-testid="stSelectbox"] [data-baseweb="select"] > div { background:#fffdf9 !important; border-color:#cfc5b8 !important; color:var(--ink) !important; }
         [data-testid="stSelectbox"] [data-baseweb="select"] div,
@@ -186,6 +209,7 @@ def render_table(frame, percent_columns=(), decimal_columns=()):
     for column in decimal_columns:
         if column in shown:
             shown[column] = shown[column].map(lambda value: f"{float(value):.3f}")
+    shown = shown.rename(columns=POLICY_METRIC_LABELS)
     st.markdown(
         '<div class="table-wrap">' + shown.to_html(index=False, classes="data-table", escape=True) + '</div>',
         unsafe_allow_html=True,
@@ -252,11 +276,10 @@ def render_feature_chart(frame):
 
 def render_policy_chart(frame):
     figure, axis = _base_figure((8, 3.8))
-    colors = ["#1e3a5f" if value == frame["Precision@K"].max() else "#0f766e" for value in frame["Precision@K"]]
     colors = ["#b86b4b" if value == frame["Precision@K"].max() else "#176b63" for value in frame["Precision@K"]]
     bars = axis.barh(frame["策略"], frame["Precision@K"], color=colors, height=.52)
     axis.set_xlim(0, max(frame["Precision@K"].max() * 1.25, .1))
-    axis.set_xlabel("Precision@K", color="#6f7774")
+    axis.set_xlabel(POLICY_METRIC_LABELS["Precision@K"], color="#6f7774")
     axis.grid(axis="x", color="#e5ded4", linewidth=.8)
     axis.grid(axis="y", visible=False)
     for bar, value in zip(bars, frame["Precision@K"]):
@@ -274,7 +297,7 @@ def render_model_charts(predictions, metrics):
         labels = predictions["actual_churn"].to_numpy(dtype=int)
         predicted = predictions[f"{model}_prediction"].to_numpy(dtype=int)
         matrix = confusion_matrix(labels, predicted)
-        image = axis.imshow(matrix, cmap="GnBu", vmin=0, vmax=max(matrix.max(), 1))
+        axis.imshow(matrix, cmap="GnBu", vmin=0, vmax=max(matrix.max(), 1))
         axis.set_title(model, color="#172033", fontweight="bold")
         axis.set_xticks([0, 1], ["未流失", "已流失"])
         axis.set_yticks([0, 1], ["未流失", "已流失"])
@@ -343,16 +366,42 @@ def ai_display_frame(row):
             shown[column] = shown[column].map(lambda value: f"{float(value):.1%}")
     if "排序分数" in shown:
         shown["排序分数"] = shown["排序分数"].map(lambda value: f"{float(value):.4f}")
-    # 转置后各行原本可能混合数字和字符串；统一为字符串，避免 Streamlit/Arrow
-    # 在渲染客户详情时进行隐式类型修复，也让 Demo 表格的展示口径一致。
+    # 转置后的同一列包含数字和文字，按文本展示。
     return shown.T.rename(columns={0: "当前客户"}).astype(str).reset_index(names="字段")
+
+
+def render_ai_explanation(explanation):
+    """将摘要、证据、建议和使用边界分区展示。"""
+    st.caption(f"生成模式：{explanation['mode']}")
+    with st.container(border=True, key="ai-summary"):
+        st.markdown('<h3 class="ai-analysis-title">风险摘要</h3>', unsafe_allow_html=True)
+        st.markdown(
+            f'<p class="ai-analysis-text">{escape(explanation["summary"])}</p>',
+            unsafe_allow_html=True,
+        )
+    left, right = st.columns(2, gap="small")
+    for column, title, field, key in (
+        (left, "风险证据", "evidence", "ai-evidence"),
+        (right, "建议动作", "actions", "ai-actions"),
+    ):
+        with column:
+            with st.container(border=True, height="stretch", key=key):
+                st.markdown(f'<h3 class="ai-analysis-title">{title}</h3>', unsafe_allow_html=True)
+                items = "".join(f"<li>{escape(item)}</li>" for item in explanation[field])
+                st.markdown(f'<ul class="ai-analysis-list">{items}</ul>', unsafe_allow_html=True)
+    with st.container(border=True, key="ai-limitations"):
+        st.markdown('<h3 class="ai-analysis-title">使用边界</h3>', unsafe_allow_html=True)
+        st.markdown(
+            f'<p class="ai-analysis-text">{escape(explanation["limitations"])}</p>',
+            unsafe_allow_html=True,
+        )
 
 
 st.set_page_config(
     page_title="客户流失风险工作台",
     page_icon="R",
     layout="wide",
-    initial_sidebar_state="auto",
+    initial_sidebar_state="expanded",
 )
 inject_styles()
 st.markdown('<div class="eyebrow">客户留存分析 · 风险工作台</div>', unsafe_allow_html=True)
@@ -392,7 +441,13 @@ with st.sidebar:
     st.markdown('<div class="sidebar-rule"></div><div class="sidebar-nav">当前项目</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-item active">客户流失风险</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-nav">分析模块</div>', unsafe_allow_html=True)
-    st.caption("请使用主区域页签切换分析模块。")
+    selected_page = st.radio(
+        "分析模块",
+        ["客户差异", "模型验证", "触达排序", "AI风险解读"],
+        label_visibility="collapsed",
+        key="analysis_navigation",
+        width="stretch",
+    )
     st.markdown('<div class="sidebar-rule"></div>', unsafe_allow_html=True)
     path = st.selectbox("分析报告", reports, index=default_index, format_func=report_label)
     st.caption("看板只读取已生成报告，不会在页面内训练模型。")
@@ -427,22 +482,22 @@ st.markdown(
 with st.container(horizontal=True):
     st.metric("客户总量", f"{metrics['样本数']:,}", border=True)
     st.metric("测试集 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
-    st.metric("Precision@K", f"{selected_policy['Precision@K']:.1%}", border=True)
-    st.metric("Lift@K", f"{selected_policy['Lift@K']:.2f}×", border=True)
+    st.metric(
+        POLICY_METRIC_LABELS["Precision@K"], f"{selected_policy['Precision@K']:.1%}",
+        border=True,
+        help="在风险排名前 K 名的优先名单中，历史流失客户所占的比例（Precision@K）。",
+    )
+    st.metric(
+        POLICY_METRIC_LABELS["Lift@K"], f"{selected_policy['Lift@K']:.2f}×",
+        border=True,
+        help="优先名单命中率 ÷ 测试集整体流失率，表示相对随机选择的提升倍数（Lift@K）。",
+    )
 
 with st.expander("数据来源与评估口径"):
     st.write("公开电信客户快照；分群使用训练集，模型依据训练集五折 AP 选择。测试结果为已参与开发分析的公开数据基准，不是独立盲测；历史流失识别不等于真实挽留收益。")
-selected_page = st.radio(
-    "分析模块",
-    ["客户差异", "模型验证", "触达排序", "AI风险解读"],
-    horizontal=True,
-    label_visibility="collapsed",
-)
-
 if selected_page == "客户差异":
     section_intro("客户分群", "训练集客户分群", "先看客户结构差异，再决定模型排序应该服务哪类触达策略。")
-    overall_display = overall.copy()
-    render_table(overall_display, percent_columns=("流失率",))
+    render_table(overall, percent_columns=("流失率",))
     dimension = st.selectbox("选择分群维度", segments["分群维度"].drop_duplicates().tolist())
     chart = segments.loc[segments["分群维度"].eq(dimension), ["分群", "流失率"]].copy()
     contract_labels = {"Month-to-month": "月付合同", "One year": "一年合同", "Two year": "两年合同"}
@@ -468,7 +523,7 @@ elif selected_page == "模型验证":
     metric_frame = pd.DataFrame(metrics["模型"]).T.reset_index(names="模型")
     metric_frame = metric_frame.rename(columns={
         "Accuracy（准确率）": "准确率", "Precision（查准率）": "查准率",
-        "Recall（查全率）": "查全率", "ROC-AUC": "ROC-AUC",
+        "Recall（查全率）": "查全率",
         "AP（平均精确率）": "平均精确率 AP",
     })
     st.markdown('<div class="section-kicker">测试集证据</div>', unsafe_allow_html=True)
@@ -476,7 +531,6 @@ elif selected_page == "模型验证":
     render_table(metric_frame, decimal_columns=("准确率", "查准率", "查全率", "F1", "ROC-AUC", "平均精确率 AP"))
     st.caption("AP（平均精确率）适合观察正类较少时的排序质量；Accuracy 不能单独代表模型好坏。分类阈值固定为 0.5。")
     render_model_charts(predictions, metrics)
-    importance = importance.copy()
     importance["特征"] = importance.feature.map(feature_label)
     importance = importance.rename(columns={"importance": "重要性"})[["特征", "重要性"]].head(15)
     st.subheader("随机森林关注的特征")
@@ -491,8 +545,7 @@ elif selected_page == "触达排序":
     strategy = st.selectbox("查看策略的测试集示例", assignments["策略"].drop_duplicates().tolist())
     sample = assignments.loc[assignments["策略"].eq(strategy)].head(30).copy()
     sample = sample.rename(columns={
-        "customerID": "客户编号", "actual_churn": "实际流失标签", "排名": "排名",
-        "排序分数": "排序分数",
+        "customerID": "客户编号", "actual_churn": "实际流失标签",
     })
     sample["实际流失标签"] = sample["实际流失标签"].map({0: "否", 1: "是"})
     sample = sample.drop(columns="策略")
@@ -517,16 +570,7 @@ else:
         render_table(ai_display_frame(selected_row))
         st.caption("上下文不包含测试集真实流失标签；风险分数用于排序，分组流失率只表示历史关联。")
         if st.button("生成 AI 风险解读", type="primary"):
-            explanation = generate_explanation(selected_row)
-            st.caption(f"生成模式：{explanation['mode']}")
-            st.markdown(f"**风险摘要**\n\n{explanation['summary']}")
-            left, right = st.columns(2)
-            with left:
-                st.markdown("**风险证据**")
-                for item in explanation["evidence"]:
-                    st.write(f"• {item}")
-            with right:
-                st.markdown("**建议动作**")
-                for item in explanation["actions"]:
-                    st.write(f"• {item}")
-            st.caption(f"使用边界：{explanation['limitations']}")
+            with st.spinner("正在整理客户风险解读…"):
+                explanation = generate_explanation(selected_row)
+            with st.container(key="ai-analysis"):
+                render_ai_explanation(explanation)

@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import tempfile
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -137,7 +138,10 @@ def test_dashboard_renders_chinese_headers(monkeypatch):
         app = AppTest.from_file(str(ROOT / "dashboard.py")).run(timeout=30)
         assert not app.exception and not app.error
         assert app.title[0].value == "电信客户流失分析与用户排序"
-        assert app.radio[0].options == ["客户差异", "模型验证", "触达排序", "AI风险解读"]
+        assert not app.main.radio
+        assert app.sidebar.radio[0].options == ["客户差异", "模型验证", "触达排序", "AI风险解读"]
+        labels = [metric.label for metric in app.metric]
+        assert "优先名单命中率" in labels and "相对随机提升倍数" in labels
         assert any("客户数" in item.value and "流失率" in item.value for item in app.markdown)
 
 
@@ -151,12 +155,14 @@ def test_dashboard_ai_button_renders_offline_explanation(monkeypatch):
         run_pipeline(sample_data(), output)
         monkeypatch.setattr(sys, "argv", ["dashboard.py", "--output", str(output)])
         app = AppTest.from_file(str(ROOT / "dashboard.py")).run(timeout=30)
-        app.radio[0].set_value("AI风险解读").run(timeout=30)
+        app.sidebar.radio[0].set_value("AI风险解读").run(timeout=30)
         assert not app.exception and app.button[0].label == "生成 AI 风险解读"
         app.button[0].click().run(timeout=30)
         assert not app.exception
         rendered = "\n".join(item.value for item in app.markdown)
         assert "风险摘要" in rendered and "风险证据" in rendered and "建议动作" in rendered
+        assert '<ul class="ai-analysis-list"><li>' in rendered
+        assert 'class="ai-analysis-text"' in rendered
         assert any("离线模板模式" in item.value for item in app.caption)
 
 
@@ -265,20 +271,46 @@ def test_ai_remote_failure_falls_back_to_template(monkeypatch):
     assert result["mode"] == "远程接口不可用，已回退模板"
 
 
-def test_ai_incomplete_remote_response_falls_back_to_template(monkeypatch):
+@pytest.mark.parametrize("content", ['{"summary":"summary only"}', "这是一段普通文本"])
+def test_ai_incomplete_remote_response_falls_back_to_template(monkeypatch, content):
     monkeypatch.setenv("CHURN_AI_BASE_URL", "https://example.invalid/v1")
     monkeypatch.setenv("CHURN_AI_MODEL", "test-model")
 
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return b'{"choices":[{"message":{"content":"{\\"summary\\":\\"summary only\\"}"}}]}'
-
-    monkeypatch.setattr(ai_assistant.urllib_request, "urlopen", lambda *args, **kwargs: Response())
+    payload = json.dumps({"choices": [{"message": {"content": content}}]}).encode("utf-8")
+    monkeypatch.setattr(ai_assistant.urllib_request, "urlopen", lambda *args, **kwargs: BytesIO(payload))
     result = ai_assistant.generate_explanation({"risk_score": 0.8, "rank": 1})
     assert result["mode"] == "远程接口不可用，已回退模板"
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+def test_ai_remote_explanation_preserves_fields_and_excludes_label(monkeypatch, fenced):
+    monkeypatch.setenv("CHURN_AI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("CHURN_AI_MODEL", "test-model")
+    monkeypatch.setenv("CHURN_AI_API_KEY", "test-key")
+    monkeypatch.setenv("CHURN_AI_TIMEOUT_SECONDS", "20")
+    explanation = {
+        "summary": "该客户的排序分数较高。",
+        "evidence": ["在网时间较短"],
+        "actions": ["人工确认近期服务体验。"],
+        "limitations": "历史关联不代表因果关系。",
+    }
+    content = json.dumps(explanation, ensure_ascii=False)
+    if fenced:
+        content = f"```json\n{content}\n```"
+    payload = json.dumps({"choices": [{"message": {"content": content}}]}).encode("utf-8")
+
+    def respond(request, timeout):
+        assert request.full_url == "https://example.test/v1/chat/completions"
+        assert request.get_header("Authorization") == "Bearer test-key"
+        assert timeout == 20
+        body = json.loads(request.data)
+        assert body["model"] == "test-model"
+        assert "actual_churn" not in body["messages"][1]["content"]
+        assert "不应发送的真实标签" not in body["messages"][1]["content"]
+        return BytesIO(payload)
+
+    monkeypatch.setattr(ai_assistant.urllib_request, "urlopen", respond)
+    result = ai_assistant.generate_explanation({
+        "risk_score": 0.8, "rank": 1, "actual_churn": "不应发送的真实标签",
+    })
+    assert result == {"mode": "模型生成", **explanation}

@@ -1,4 +1,4 @@
-"""客户流失分析流程：数据校验、客户分群、模型验证与容量策略评估。"""
+"""客户分群、流失模型训练和固定名额下的排序评估。"""
 import argparse
 import json
 import sqlite3
@@ -14,17 +14,25 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (ConfusionMatrixDisplay, accuracy_score, average_precision_score,
-                             confusion_matrix, f1_score, precision_score, recall_score,
-                             roc_auc_score, RocCurveDisplay)
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    RocCurveDisplay,
+    accuracy_score,
+    average_precision_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-AVAILABLE_FONTS = {font.name for font in font_manager.fontManager.ttflist}
-for FONT_NAME in ("Microsoft YaHei", "SimHei", "Noto Sans CJK SC"):
-    if FONT_NAME in AVAILABLE_FONTS:
-        plt.rcParams["font.sans-serif"] = [FONT_NAME]
+available_fonts = {font.name for font in font_manager.fontManager.ttflist}
+for font_name in ("Microsoft YaHei", "SimHei", "Noto Sans CJK SC"):
+    if font_name in available_fonts:
+        plt.rcParams["font.sans-serif"] = [font_name]
         break
 plt.rcParams["axes.unicode_minus"] = False
 
@@ -38,8 +46,7 @@ REQUIRED_COLUMNS = {
     "DeviceProtection", "TechSupport", "StreamingTV", "StreamingMovies", "Contract",
     "PaperlessBilling", "PaymentMethod", "MonthlyCharges", "TotalCharges",
 }
-CATEGORICAL_COLUMNS = [column for column in sorted(REQUIRED_COLUMNS - {"customerID", "Churn"})
-                       if column not in NUMERIC_COLUMNS]
+CATEGORICAL_COLUMNS = sorted(REQUIRED_COLUMNS - {"customerID", "Churn"} - set(NUMERIC_COLUMNS))
 AI_CONTEXT_COLUMNS = [
     "tenure", "Contract", "MonthlyCharges", "InternetService", "PaymentMethod",
     "TechSupport", "OnlineSecurity",
@@ -75,7 +82,7 @@ def prepare_data(frame):
 
 
 def make_pipeline(estimator):
-    """把填补、编码和模型串起来，确保预处理只从训练集学习。"""
+    """预处理随模型一起拟合，避免交叉验证时泄漏验证折信息。"""
     numeric = Pipeline([
         ("fill_missing", SimpleImputer(strategy="median")),
         ("scale", StandardScaler()),
@@ -255,15 +262,15 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
         "模型": {},
     }
 
-    fitted = {}
-    for key, model in models.items():
+    model_scores = {}
+    for name, model in models.items():
         model.fit(X_train, y_train)
         probability = model.predict_proba(X_test)[:, 1]
         predicted = (probability >= 0.5).astype(int)
-        fitted[key] = (model, probability, predicted)
-        predictions[f"{key}_probability"] = probability
-        predictions[f"{key}_prediction"] = predicted
-        metrics["模型"][key] = {
+        model_scores[name] = probability
+        predictions[f"{name}_probability"] = probability
+        predictions[f"{name}_prediction"] = predicted
+        metrics["模型"][name] = {
             "Accuracy（准确率）": float(accuracy_score(y_test, predicted)),
             "Precision（查准率）": float(precision_score(y_test, predicted, zero_division=0)),
             "Recall（查全率）": float(recall_score(y_test, predicted, zero_division=0)),
@@ -276,10 +283,8 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
     predictions.to_csv(output / "predictions.csv", index=False, encoding="utf-8-sig")
     overall.to_csv(output / "overall_summary.csv", index=False, encoding="utf-8-sig")
     segments.to_csv(output / "segment_summary.csv", index=False, encoding="utf-8-sig")
-    (output / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
-
     budget_count = int(len(y_test) * metrics["名额比例"])
-    selected_probability = fitted[selected_model][1]
+    selected_probability = model_scores[selected_model]
     selected_order = np.lexsort((test_ids.to_numpy(dtype=str), -selected_probability))
     ai_context = build_ai_context(
         X_test, test_ids, selected_model, selected_probability, selected_order,
@@ -296,29 +301,19 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
 
     policy_rows = []
     assignment_rows = []
-    for model_name, (_, probability, _) in fitted.items():
-        row, order = evaluate_policy(model_name, y_test, test_ids, probability, budget_count)
+    # 规则和模型都按同一名额排序，分数越大越优先。
+    policy_scores = {**model_scores, "短在网时长规则": -X_test["tenure"].to_numpy(dtype=float)}
+    for name, scores in policy_scores.items():
+        row, order = evaluate_policy(name, y_test, test_ids, scores, budget_count)
         policy_rows.append(row)
         for rank, position in enumerate(order[:budget_count], start=1):
             assignment_rows.append({
-                "策略": model_name,
+                "策略": name,
                 "customerID": str(test_ids.iloc[position]),
                 "actual_churn": int(y_test.iloc[position]),
                 "排名": rank,
-                "排序分数": float(probability[position]),
+                "排序分数": float(scores[position]),
             })
-
-    tenure_scores = -X_test["tenure"].to_numpy(dtype=float)
-    row, order = evaluate_policy("短在网时长规则", y_test, test_ids, tenure_scores, budget_count)
-    policy_rows.append(row)
-    for rank, position in enumerate(order[:budget_count], start=1):
-        assignment_rows.append({
-            "策略": "短在网时长规则",
-            "customerID": str(test_ids.iloc[position]),
-            "actual_churn": int(y_test.iloc[position]),
-            "排名": rank,
-            "排序分数": float(tenure_scores[position]),
-        })
 
     positives = int(y_test.sum())
     prevalence = positives / len(y_test)
@@ -336,7 +331,8 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
     ]).to_csv(output / "policy_assignments.csv", index=False, encoding="utf-8-sig")
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    for ax, (name, (_, _, predicted)) in zip(axes, fitted.items()):
+    for ax, name in zip(axes, models):
+        predicted = predictions[f"{name}_prediction"].to_numpy()
         ConfusionMatrixDisplay(confusion_matrix(y_test, predicted), display_labels=["未流失", "已流失"]).plot(
             ax=ax, colorbar=False, values_format="d")
         ax.set_title(name)
@@ -346,7 +342,7 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    for name, (_, probability, _) in fitted.items():
+    for name, probability in model_scores.items():
         RocCurveDisplay.from_predictions(y_test, probability, name=name, ax=ax)
     ax.plot([0, 1], [0, 1], linestyle="--", color="grey", label="随机排序")
     ax.set_title("测试集 ROC 曲线")
@@ -354,7 +350,7 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
     fig.savefig(output / "roc_curve.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    forest = fitted["随机森林"][0]
+    forest = models["随机森林"]
     names = forest.named_steps["preprocess"].get_feature_names_out()
     importance = pd.DataFrame({"feature": names, "importance": forest.named_steps["model"].feature_importances_})
     importance.sort_values("importance", ascending=False).to_csv(
