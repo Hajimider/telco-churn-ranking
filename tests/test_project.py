@@ -138,11 +138,12 @@ def test_dashboard_renders_chinese_headers(monkeypatch):
         app = AppTest.from_file(str(ROOT / "dashboard.py")).run(timeout=30)
         assert not app.exception and not app.error
         assert app.title[0].value == "电信客户流失分析与用户排序"
+        assert app.sidebar.radio[0].value == "报告总览"
         assert not app.main.radio
-        assert app.sidebar.radio[0].options == ["客户差异", "模型验证", "触达排序", "AI风险解读"]
+        assert app.sidebar.radio[0].options == ["报告总览", "客户差异", "模型验证", "触达排序", "AI风险解读"]
         labels = [metric.label for metric in app.metric]
-        assert "优先名单命中率" in labels and "相对随机提升倍数" in labels
-        assert any("客户数" in item.value and "流失率" in item.value for item in app.markdown)
+        assert labels == ["客户总量", "测试集 AP", "优先名单命中率", "相对随机提升倍数"]
+        assert app.expander[0].label == "数据来源与评估口径"
 
 
 def test_dashboard_ai_button_renders_offline_explanation(monkeypatch):
@@ -190,11 +191,132 @@ def test_dashboard_selects_complete_report(report_project, monkeypatch, argument
     assert not app.exception and not app.error
     report_selector = next(item for item in app.selectbox if item.label == "分析报告")
     assert Path(report_selector.value) == report_project / "outputs" / "current"
-    assert app.radio[0].options == ["客户差异", "模型验证", "触达排序", "AI风险解读"]
+    assert app.radio[0].options == ["报告总览", "客户差异", "模型验证", "触达排序", "AI风险解读"]
     if "outputs/run_01" in arguments:
         assert any("不包含完整" in item.value for item in app.info)
     assert "实习" not in app.caption[0].value
     assert "学习版" not in " ".join(item.value for item in app.caption)
+
+
+def test_dashboard_pages_show_only_their_own_content(report_project, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    report = report_project / "outputs" / "current"
+    metrics = json.loads((report / "metrics.json").read_text(encoding="utf-8"))
+    summary = pd.read_csv(report / "overall_summary.csv").iloc[0]
+    model = metrics["交叉验证"]["选择模型"]
+    policy = pd.read_csv(report / "policy_metrics.csv")
+    selected_policy = policy.loc[policy["策略"].eq(model)].iloc[0]
+    monkeypatch.setattr(sys, "argv", ["dashboard.py"])
+    app = AppTest.from_file(str(report_project / "dashboard.py")).run(timeout=30)
+    assert app.sidebar.radio[0].value == "报告总览"
+    pages = [
+        ("报告总览", "电信客户流失分析与用户排序", ["客户总量", "测试集 AP", "优先名单命中率", "相对随机提升倍数"], None),
+        ("客户差异", "训练集客户分群", ["训练集客户数", "训练集流失人数", "训练集流失率"], "选择分群维度"),
+        ("模型验证", "模型验证", ["主模型", "五折 AP 均值", "测试集 AP", "测试集 ROC-AUC"], None),
+        ("触达排序", "固定 10% 名额下的策略对照", ["优先触达名额", "命中历史流失人数", "优先名单命中率", "相对随机提升倍数"], "查看策略的测试集示例"),
+        ("AI风险解读", "AI 风险解读与触达建议", [], "选择主模型固定容量优先客户"),
+    ]
+    for page, title, metric_labels, selector in pages:
+        app.sidebar.radio[0].set_value(page).run(timeout=30)
+        assert not app.exception and not app.error
+        assert [item.value for item in app.title] == [title]
+        assert [item.label for item in app.metric] == metric_labels
+        assert [item.label for item in app.main.selectbox] == ([selector] if selector else [])
+        assert Path(app.sidebar.selectbox[0].value) == report
+        expected_expanders = {
+            "报告总览": ["数据来源与评估口径"], "AI风险解读": ["客户资料与分群统计"],
+        }
+        assert [item.label for item in app.expander] == expected_expanders.get(page, [])
+        rendered = "\n".join(item.value for item in app.main.markdown)
+        assert ('class="status-strip"' in rendered) == (page == "报告总览")
+        assert ("分析客户流失差异" in rendered) == (page == "报告总览")
+        assert "指标怎么读" not in [item.value for item in app.subheader]
+        assert "报告目录" not in rendered and str(report) not in rendered
+        if page == "客户差异":
+            assert app.metric[0].value == f"{int(summary['客户数']):,}"
+            assert app.metric[2].value == f"{summary['流失率']:.1%}"
+        elif page == "模型验证":
+            assert app.metric[0].value == metrics["交叉验证"]["选择模型"]
+        elif page == "报告总览":
+            assert app.metric[0].value == f"{metrics['样本数']:,}"
+            assert app.metric[1].value == f"{metrics['模型'][model]['AP（平均精确率）']:.3f}"
+            assert app.metric[2].value == f"{selected_policy['Precision@K']:.1%}"
+            assert app.metric[3].value == f"{selected_policy['Lift@K']:.2f}×"
+            assert model in rendered and "固定触达容量" in rendered
+            assert "不是独立盲测" in rendered
+            assert str(int(selected_policy["命中流失"])) in app.info[0].value
+    app.sidebar.radio[0].set_value("客户差异").run(timeout=30)
+    assert not app.exception and app.title[0].value == "训练集客户分群"
+    app.sidebar.radio[0].set_value("报告总览").run(timeout=30)
+    assert not app.exception and app.title[0].value == "电信客户流失分析与用户排序"
+
+
+def test_ai_explanation_survives_navigation_and_stays_with_customer(report_project, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    current = report_project / "outputs" / "current"
+    calls = []
+
+    def generate(context, settings=None):
+        calls.append(context["customerID"])
+        return {
+            "mode": "模型生成", "summary": f"客户 {context['customerID']} 的第 {len(calls)} 次解读",
+            "evidence": ["在网时间较短"], "actions": ["人工核实服务情况"],
+            "limitations": "分数只用于排序",
+        }
+
+    def summaries(app):
+        return [item.value for item in app.markdown if 'class="ai-analysis-text"' in item.value]
+
+    monkeypatch.setattr(ai_assistant, "generate_explanation", generate)
+    monkeypatch.setattr(sys, "argv", ["dashboard.py", "--output", str(current)])
+    with tempfile.TemporaryDirectory(dir=report_project / "outputs") as directory:
+        other = Path(directory)
+        shutil.copytree(current, other, dirs_exist_ok=True)
+        app = AppTest.from_file(str(report_project / "dashboard.py")).run(timeout=30)
+        app.sidebar.radio[0].set_value("AI风险解读").run(timeout=30)
+        first, second = app.main.selectbox[0].options[:2]
+        app.main.selectbox[0].set_value(second).run(timeout=30)
+        app.button[0].click().run(timeout=30)
+        original = summaries(app)
+        assert original and calls == [second]
+
+        for page in ("报告总览", "客户差异", "模型验证", "触达排序"):
+            app.sidebar.radio[0].set_value(page).run(timeout=30)
+            app.sidebar.radio[0].set_value("AI风险解读").run(timeout=30)
+            assert not app.exception
+            assert app.main.selectbox[0].value == second
+            assert summaries(app) == original
+            assert calls == [second]
+
+        app.main.selectbox[0].set_value(first).run(timeout=30)
+        assert not summaries(app) and calls == [second]
+        app.button[0].click().run(timeout=30)
+        first_result = summaries(app)
+        assert first_result != original and calls == [second, first]
+
+        app.sidebar.selectbox[0].set_value(other).run(timeout=30)
+        assert not app.exception and not summaries(app)
+        app.button[0].click().run(timeout=30)
+        assert calls == [second, first, first]
+        assert summaries(app) != first_result
+
+        context_file = other / "ai_customer_context.csv"
+        context = pd.read_csv(context_file)
+        context.loc[context["customerID"].eq(first), "risk_evidence"] = "更新后的客户资料"
+        context.to_csv(context_file, index=False)
+        app.run(timeout=30)
+        assert not app.exception and not summaries(app)
+        assert len(calls) == 3
+
+        app.sidebar.selectbox[0].set_value(current).run(timeout=30)
+        assert summaries(app) == first_result
+        app.main.selectbox[0].set_value(second).run(timeout=30)
+        assert summaries(app) == original and len(calls) == 3
+        app.button[0].click().run(timeout=30)
+        assert not app.exception and summaries(app) != original
+        assert calls == [second, first, first, second]
 
 
 def test_dashboard_without_reports_gives_generation_command(monkeypatch):
@@ -238,6 +360,20 @@ def test_ai_prompt_and_template_exclude_evaluation_label(monkeypatch):
     assert result["mode"] == "离线模板模式"
     assert result["evidence"]
     assert result["actions"]
+
+
+def test_ai_response_formats_paragraph_lists():
+    content = {
+        "summary": ["客户使用月付合同。", "联系前需核实服务情况。"],
+        "evidence": ["在网时间为一个月。"],
+        "actions": ["核对合同与账单。"],
+        "limitations": ["分数只用于排序。", "分群差异不是因果结论。"],
+    }
+    payload = {"choices": [{"message": {"content": json.dumps(content)}}]}
+    result = ai_assistant._parse_model_response(payload)
+    assert result["summary"] == "客户使用月付合同。\n联系前需核实服务情况。"
+    assert result["limitations"] == "分数只用于排序。\n分群差异不是因果结论。"
+    assert result["mode"] == "模型生成"
 
 
 def test_ai_project_env_loader_preserves_existing_environment(monkeypatch):
@@ -314,3 +450,102 @@ def test_ai_remote_explanation_preserves_fields_and_excludes_label(monkeypatch, 
         "risk_score": 0.8, "rank": 1, "actual_churn": "不应发送的真实标签",
     })
     assert result == {"mode": "模型生成", **explanation}
+
+
+def test_legacy_report_context_preserves_ranking_and_excludes_labels():
+    assignments = [
+        {"策略": "逻辑回归", "customerID": "C2", "排名": 2, "排序分数": 0.8, "actual_churn": 1},
+        {"策略": "随机森林", "customerID": "C3", "排名": 1, "排序分数": 0.99},
+        {"策略": "逻辑回归", "customerID": "C1", "排名": 1, "排序分数": 0.9, "actual_churn": 0},
+    ]
+    predictions = [
+        {"customerID": "C1", "tenure": 5, "actual_churn": "不能发送的标签"},
+        {"customerID": "C2", "tenure": 9, "actual_churn": "不能发送的标签"},
+    ]
+    context = ai_assistant.context_from_report(assignments, predictions, "逻辑回归")
+    assert [row["customerID"] for row in context] == ["C1", "C2"]
+    assert [row["risk_score"] for row in context] == [0.9, 0.8]
+    assert [row["tenure"] for row in context] == [5, 9]
+    assert all("actual_churn" not in row and "Contract" not in row for row in context)
+    assert "不能发送的标签" not in ai_assistant.build_prompt(context[0])
+
+
+def test_dashboard_legacy_report_ai_uses_cloud_secrets(report_project, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    for key in ("CHURN_AI_BASE_URL", "CHURN_AI_MODEL", "CHURN_AI_API_KEY", "CHURN_AI_TIMEOUT_SECONDS"):
+        monkeypatch.delenv(key, raising=False)
+    explanation = {
+        "summary": "这是远程接口返回的解读。", "evidence": ["排序分数较高"],
+        "actions": ["人工核实客户需求。"], "limitations": "排序分数未经校准。",
+    }
+    payload = json.dumps({"choices": [{"message": {"content": json.dumps(explanation)}}]}).encode()
+    requests = []
+
+    def respond(request, timeout):
+        assert request.full_url == "https://example.test/v1/chat/completions"
+        assert request.get_header("Authorization") == "Bearer cloud-test-key"
+        body = json.loads(request.data)
+        assert body["model"] == "cloud-test-model"
+        assert "actual_churn" not in body["messages"][1]["content"]
+        requests.append(body)
+        return BytesIO(payload)
+
+    monkeypatch.setattr(ai_assistant.urllib_request, "urlopen", respond)
+    with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+        report = Path(directory) / "legacy"
+        shutil.copytree(report_project / "outputs" / "current", report,
+                        ignore=shutil.ignore_patterns("ai_customer_context.csv"))
+        monkeypatch.setattr(sys, "argv", ["dashboard.py", "--output", str(report)])
+        app = AppTest.from_file(str(ROOT / "dashboard.py"))
+        app.secrets.update({
+            "CHURN_AI_BASE_URL": "https://example.test/v1",
+            "CHURN_AI_MODEL": "cloud-test-model",
+            "CHURN_AI_API_KEY": "cloud-test-key",
+        })
+        app.run(timeout=30)
+        app.sidebar.radio[0].set_value("AI风险解读").run(timeout=30)
+        assert not app.exception and app.button
+        app.button[0].click().run(timeout=30)
+        assert not app.exception and len(requests) == 1
+        assert any("模型生成" in item.value for item in app.caption)
+        assert any(explanation["summary"] in item.value for item in app.markdown)
+        assert not (report / "ai_customer_context.csv").exists()
+
+
+def test_chinese_chart_font_without_system_fonts(monkeypatch):
+    import warnings
+    import matplotlib.pyplot as plt
+    from matplotlib import font_manager
+    from chart_font import configure_chart_font
+
+    monkeypatch.setattr(font_manager.fontManager, "ttflist", [])
+    font_manager.fontManager._findfont_cached.cache_clear()
+    family = configure_chart_font()
+    path = font_manager.findfont(font_manager.FontProperties(family=family), fallback_to_default=False)
+    assert Path(path).is_relative_to(ROOT / "assets" / "fonts")
+    characters = font_manager.get_font(path).get_charmap()
+    assert all(ord(character) in characters for character in "客户流失率（月）逻辑回归随机森林")
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Glyph .*missing from font")
+        figure, axis = plt.subplots()
+        try:
+            axis.set_title("客户流失率（月）")
+            figure.savefig(BytesIO(), format="png")
+        finally:
+            plt.close(figure)
+    font_manager.fontManager._findfont_cached.cache_clear()
+
+
+def test_deployment_demo_includes_matching_ai_context():
+    report = ROOT / "outputs" / "project_v1"
+    metrics = json.loads((report / "metrics.json").read_text(encoding="utf-8"))
+    model = metrics["交叉验证"]["选择模型"]
+    context = pd.read_csv(report / "ai_customer_context.csv", dtype={"customerID": "string"})
+    assignments = pd.read_csv(report / "policy_assignments.csv", dtype={"customerID": "string"})
+    selected = assignments.loc[assignments["策略"].eq(model)].sort_values("排名")
+    assert context["customerID"].tolist() == selected["customerID"].tolist()
+    score_column = "排序分数" if "排序分数" in selected else "预测流失风险分数"
+    np.testing.assert_allclose(context["risk_score"], selected[score_column])
+    assert context[["Contract", "MonthlyCharges", "tenure"]].notna().all().all()
+    assert "actual_churn" not in context.columns and "Churn" not in context.columns

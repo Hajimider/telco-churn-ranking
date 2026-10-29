@@ -3,10 +3,14 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+.coverage.*
 .mypy_cache/
 .ruff_cache/
+.venv/
+venv/
+.ipynb_checkpoints/
 
-# Local IDE and operating-system files
+# 本机编辑器与系统文件
 .idea/
 .vscode/
 *.swp
@@ -14,19 +18,32 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Local configuration and secrets
+# 本机配置和密钥；保留配置示例
 .env
 .env.*
 !.env.example
 .streamlit/secrets.toml
 
-# Local datasets and generated reports
-data/*.csv
-data/*.parquet
-data/*.xlsx
-outputs/*
+# 原始数据只保留下载说明
+/data/*
+!/data/README.md
 
-# Local model artifacts and databases
+# 只上传部署用的完整演示报告，其他实验输出留在本机
+/outputs/*
+!/outputs/project_v1/
+/outputs/project_v1/*
+!/outputs/project_v1/metrics.json
+!/outputs/project_v1/overall_summary.csv
+!/outputs/project_v1/segment_summary.csv
+!/outputs/project_v1/policy_metrics.csv
+!/outputs/project_v1/policy_assignments.csv
+!/outputs/project_v1/predictions.csv
+!/outputs/project_v1/ai_customer_context.csv
+!/outputs/project_v1/feature_importance.csv
+!/outputs/project_v1/confusion_matrices.png
+!/outputs/project_v1/roc_curve.png
+
+# 模型文件和本机数据库
 *.pkl
 *.pickle
 *.joblib
@@ -34,7 +51,9 @@ outputs/*
 *.sqlite3
 *.db
 
-# Logs and temporary files
+# 日志和临时文件；测试会在项目根目录创建 tmp 开头的目录
+/tmp*/
+/temp/
 *.log
 *.tmp
 *.bak

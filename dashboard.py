@@ -7,28 +7,13 @@ from html import escape
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib import font_manager
 import numpy as np
 import pandas as pd
 import streamlit as st
 from sklearn.metrics import auc, confusion_matrix, roc_curve
 
-from ai_assistant import generate_explanation
-
-
-def configure_chart_font():
-    """优先使用系统中文字体，避免中文轴标签被 Matplotlib 渲染成方框。"""
-    font_root = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-    candidates = ("msyh.ttc", "msyhbd.ttc", "simhei.ttf", "simsun.ttc")
-    for filename in candidates:
-        font_path = font_root / filename
-        if font_path.is_file():
-            font_manager.fontManager.addfont(str(font_path))
-            font_name = font_manager.FontProperties(fname=str(font_path)).get_name()
-            plt.rcParams["font.sans-serif"] = [font_name]
-            plt.rcParams["axes.unicode_minus"] = False
-            return
-    plt.rcParams["axes.unicode_minus"] = False
+from ai_assistant import context_from_report, generate_explanation
+from chart_font import configure_chart_font
 
 
 configure_chart_font()
@@ -77,8 +62,8 @@ def inject_styles():
         """
         <style>
         :root {
-            --navy: #243b3a;
-            --navy-deep: #fbf8f3;
+            --heading: #243b3a;
+            --sidebar: #fbf8f3;
             --teal: #176b63;
             --ink: #263238;
             --muted: #596560;
@@ -90,22 +75,27 @@ def inject_styles():
             --success: #3f7456;
         }
         .stApp { background: var(--canvas); color: var(--ink); }
-        [data-testid="stHeader"] { background: rgba(245,241,235,.9); }
-        .block-container { max-width: 1440px; padding-top: 4rem; padding-bottom: 3rem; }
-        [data-testid="stSidebar"] { background: var(--navy-deep); border-right: 1px solid var(--line); }
+        [data-testid="stHeader"] { background:transparent !important; height:0 !important; min-height:0 !important; pointer-events:none; }
+        [data-testid="stToolbar"] { background:transparent !important; pointer-events:none; }
+        [data-testid="stToolbarActions"], [data-testid="stAppDeployButton"],
+        [data-testid="stMainMenu"], [data-testid="stStatusWidget"] { display:none !important; }
+        [data-testid="stExpandSidebarButton"] { position:fixed; top:.75rem; left:.75rem; pointer-events:auto; }
+        [data-testid="stHeader"] button { pointer-events:auto; }
+        .block-container { max-width: 1440px; padding-top: 2rem; padding-bottom: 3rem; }
+        [data-testid="stSidebar"] { background: var(--sidebar); border-right: 1px solid var(--line); }
         [data-testid="stSidebar"] section { padding-top: 1.6rem; }
         [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] { color: var(--ink); }
         [data-testid="stSidebar"] p { color: #596560 !important; }
         [data-testid="stSelectbox"] label,
         [data-testid="stSelectbox"] label p,
         [data-testid="stSelectbox"] [data-testid="stWidgetLabel"] p { color:var(--ink) !important; }
-        h1 { color: var(--navy); letter-spacing: 0; font-family: "Noto Serif SC", "Source Han Serif SC", "Microsoft YaHei", serif; font-weight: 800; margin-bottom: .2rem; }
-        h2, h3 { color: var(--navy); letter-spacing: 0; }
-        .eyebrow { color: var(--teal); font-size: .76rem; font-weight: 800; letter-spacing: .08em; margin-bottom: .35rem; }
-        .hero-subtitle { color: var(--muted); font-size: 1rem; margin-top: 0; }
+        h1 { color: var(--heading); letter-spacing: 0; font-family: "Noto Serif SC", "Source Han Serif SC", "Microsoft YaHei", serif; font-weight: 800; margin-bottom: .2rem; }
+        h2, h3 { color: var(--heading); letter-spacing: 0; }
+        [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color:var(--muted) !important; }
+        .hero-subtitle { color:var(--muted); font-size:1rem; margin-top:0; }
         .brand-mark { display:flex; align-items:center; gap:.65rem; margin-bottom:1.25rem; }
         .brand-icon { width:2.25rem; height:2.25rem; border-radius:50%; display:grid; place-items:center; background:#e7f0ec; color:var(--teal); border:1px solid #76a99e; font-weight:800; }
-        .brand-name { color:var(--navy); font-size:1.05rem; font-weight:800; line-height:1.1; }
+        .brand-name { color:var(--heading); font-size:1.05rem; font-weight:800; line-height:1.1; }
         .brand-caption { color:var(--muted); font-size:.72rem; margin-top:.18rem; }
         .sidebar-rule { border-top:1px solid var(--line); margin:1rem 0; }
         .sidebar-nav { color:var(--teal); font-size:.73rem; letter-spacing:.08em; margin:.8rem 0 .55rem; }
@@ -114,13 +104,12 @@ def inject_styles():
         .status-strip { display:flex; flex-wrap:wrap; gap:.65rem; align-items:center; margin:1rem 0 1.35rem; padding:.8rem 1rem; border:1px solid var(--line); border-left:4px solid var(--teal); border-radius:.65rem; background:var(--surface); color:var(--muted); font-size:.86rem; }
         .status-chip { display:inline-flex; align-items:center; gap:.35rem; padding:.25rem .55rem; border-radius:999px; background:#e7f0ec; color:var(--teal); font-weight:700; font-size:.74rem; }
         .section-kicker { color:var(--teal); font-size:.72rem; font-weight:800; letter-spacing:.12em; text-transform:uppercase; margin-bottom:.25rem; }
-        .section-note { color:var(--muted); margin-top:-.35rem; margin-bottom:.8rem; }
         [data-testid="stMetric"] { background:var(--surface); border:1px solid var(--line); border-radius:.7rem; padding:1rem 1.05rem; box-shadow:0 3px 10px rgba(30,58,95,.045); }
         [data-testid="stMetricLabel"] { color:var(--muted); }
-        [data-testid="stMetricValue"] { color:var(--navy); font-weight:800; }
+        [data-testid="stMetricValue"] { color:var(--heading); font-weight:800; }
         .table-wrap { width:100%; overflow-x:auto; border:1px solid var(--line); border-radius:.65rem; background:#fff; }
         .data-table { width:100%; border-collapse:collapse; color:var(--ink); background:#fff; font-size:.86rem; }
-        .data-table th { background:#eef5f7; color:var(--navy); font-weight:800; text-align:left; white-space:nowrap; padding:.72rem .8rem; border-bottom:1px solid #cbdde3; }
+        .data-table th { background:#eef5f7; color:var(--heading); font-weight:800; text-align:left; white-space:nowrap; padding:.72rem .8rem; border-bottom:1px solid #cbdde3; }
         .data-table td { padding:.68rem .8rem; border-bottom:1px solid #e5edf2; white-space:nowrap; }
         .data-table tr:last-child td { border-bottom:0; }
         .data-table tr:hover td { background:#f5faf9; }
@@ -128,12 +117,12 @@ def inject_styles():
         .risk-card.high { border-left-color:var(--danger); }
         .risk-card.low { border-left-color:var(--success); }
         .risk-label { color:var(--muted); font-size:.76rem; text-transform:uppercase; letter-spacing:.08em; }
-        .risk-value { color:var(--navy); font-size:1.35rem; font-weight:800; margin:.15rem 0; }
+        .risk-value { color:var(--heading); font-size:1.35rem; font-weight:800; margin:.15rem 0; }
         .risk-detail { color:var(--muted); font-size:.86rem; }
         [data-testid="stRadio"] > div { gap:.5rem; flex-wrap:wrap; }
-        [data-testid="stRadio"] label { border:1px solid #cfc5b8; border-radius:.55rem; padding:.48rem .95rem; background:#fffdf9; color:var(--navy) !important; font-weight:700; }
+        [data-testid="stRadio"] label { border:1px solid #cfc5b8; border-radius:.55rem; padding:.48rem .95rem; background:#fffdf9; color:var(--heading) !important; font-weight:700; }
         [data-testid="stRadio"] input[type="radio"] { accent-color:#b86b4b; }
-        [data-testid="stRadio"] label p, [data-testid="stRadio"] label span { color:var(--navy) !important; }
+        [data-testid="stRadio"] label p, [data-testid="stRadio"] label span { color:var(--heading) !important; }
         [data-testid="stRadio"] label:has(input:checked) { background:#e7f0ec; border-color:#76a99e; color:var(--teal) !important; }
         [data-testid="stRadio"] label:has(input:checked) p, [data-testid="stRadio"] label:has(input:checked) span { color:var(--teal) !important; }
         .st-key-analysis_navigation [role="radiogroup"] { flex-direction:column; gap:.5rem; }
@@ -146,7 +135,7 @@ def inject_styles():
         .st-key-ai-limitations { background:#f8f4ec; }
         .st-key-ai-analysis { font-family:"Microsoft YaHei", "Noto Sans SC", sans-serif; }
         .st-key-ai-analysis [data-testid="stMarkdownContainer"] { margin-bottom:0 !important; }
-        .st-key-ai-analysis .ai-analysis-title { color:var(--navy); font-family:inherit; font-size:1rem; font-weight:750; line-height:1.5; margin:0 0 .65rem; padding:0; }
+        .st-key-ai-analysis .ai-analysis-title { color:var(--heading); font-family:inherit; font-size:1rem; font-weight:750; line-height:1.5; margin:0 0 .65rem; padding:0; }
         .st-key-ai-analysis .ai-analysis-text, .st-key-ai-analysis .ai-analysis-list { color:var(--ink); font-family:inherit; font-size:.95rem; line-height:1.85; overflow-wrap:anywhere; }
         .st-key-ai-analysis .ai-analysis-text { margin:0; white-space:pre-line; }
         .st-key-ai-analysis .ai-analysis-list { width:100%; box-sizing:border-box; margin:0; padding-left:1.25rem; }
@@ -176,7 +165,7 @@ def inject_styles():
         .stButton > button[kind="primary"]:focus { box-shadow:0 0 0 .15rem rgba(23,107,99,.18) !important; color:var(--teal) !important; }
         [data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:.6rem; overflow:hidden; }
         @media (max-width: 760px) {
-            .block-container { padding:1.2rem .8rem 2rem; }
+            .block-container { padding:3.5rem .8rem 2rem; }
             h1 { font-size:1.85rem; }
             [data-testid="stSidebar"] { width:min(88vw, 320px); }
         }
@@ -186,10 +175,9 @@ def inject_styles():
     )
 
 
-def section_intro(kicker, title, note):
-    st.markdown(f'<div class="section-kicker">{escape(kicker)}</div>', unsafe_allow_html=True)
-    st.subheader(title)
-    st.markdown(f'<div class="section-note">{escape(note)}</div>', unsafe_allow_html=True)
+def page_header(title, description):
+    st.title(title)
+    st.caption(description)
 
 
 def risk_level(score):
@@ -255,8 +243,8 @@ def render_cv_chart(cv):
     axis.set_xlabel("平均精确率 AP", color="#6f7774")
     axis.grid(axis="x", color="#e5ded4", linewidth=.8)
     axis.grid(axis="y", visible=False)
-    for bar, value in zip(bars, values):
-        axis.text(value + .012, bar.get_y() + bar.get_height() / 2, f"{value:.3f}", va="center", color="#263238", fontsize=10, fontweight="bold")
+    for bar, value, error in zip(bars, values, errors):
+        axis.text(value + error + .012, bar.get_y() + bar.get_height() / 2, f"{value:.3f}", va="center", color="#263238", fontsize=10, fontweight="bold")
     figure.tight_layout()
     st.pyplot(figure, width="stretch")
     plt.close(figure)
@@ -370,8 +358,19 @@ def ai_display_frame(row):
     return shown.T.rename(columns={0: "当前客户"}).astype(str).reset_index(names="字段")
 
 
+def ai_settings():
+    try:
+        secrets = st.secrets.to_dict()
+    except FileNotFoundError:
+        secrets = {}
+    defaults = {
+        "CHURN_AI_BASE_URL": "", "CHURN_AI_MODEL": "", "CHURN_AI_API_KEY": "",
+        "CHURN_AI_TIMEOUT_SECONDS": "20",
+    }
+    return {key: os.environ.get(key, str(secrets.get(key, default))) for key, default in defaults.items()}
+
+
 def render_ai_explanation(explanation):
-    """将摘要、证据、建议和使用边界分区展示。"""
     st.caption(f"生成模式：{explanation['mode']}")
     with st.container(border=True, key="ai-summary"):
         st.markdown('<h3 class="ai-analysis-title">风险摘要</h3>', unsafe_allow_html=True)
@@ -390,7 +389,7 @@ def render_ai_explanation(explanation):
                 items = "".join(f"<li>{escape(item)}</li>" for item in explanation[field])
                 st.markdown(f'<ul class="ai-analysis-list">{items}</ul>', unsafe_allow_html=True)
     with st.container(border=True, key="ai-limitations"):
-        st.markdown('<h3 class="ai-analysis-title">使用边界</h3>', unsafe_allow_html=True)
+        st.markdown('<h3 class="ai-analysis-title">解读说明</h3>', unsafe_allow_html=True)
         st.markdown(
             f'<p class="ai-analysis-text">{escape(explanation["limitations"])}</p>',
             unsafe_allow_html=True,
@@ -404,9 +403,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 inject_styles()
-st.markdown('<div class="eyebrow">客户留存分析 · 风险工作台</div>', unsafe_allow_html=True)
-st.title("电信客户流失分析与用户排序")
-st.markdown('<p class="hero-subtitle">从客户差异到风险排序，再到人工触达建议的一站式离线分析工作台。</p>', unsafe_allow_html=True)
 
 try:
     requested = output_dir()
@@ -443,16 +439,16 @@ with st.sidebar:
     st.markdown('<div class="sidebar-nav">分析模块</div>', unsafe_allow_html=True)
     selected_page = st.radio(
         "分析模块",
-        ["客户差异", "模型验证", "触达排序", "AI风险解读"],
+        ["报告总览", "客户差异", "模型验证", "触达排序", "AI风险解读"],
         label_visibility="collapsed",
         key="analysis_navigation",
         width="stretch",
     )
     st.markdown('<div class="sidebar-rule"></div>', unsafe_allow_html=True)
-    path = st.selectbox("分析报告", reports, index=default_index, format_func=report_label)
-    st.caption("看板只读取已生成报告，不会在页面内训练模型。")
+    path = st.selectbox("分析报告", reports, index=default_index, format_func=lambda report: report.name)
+    st.caption("切换报告，查看对应的分析成果。")
 if requested is not None and requested not in reports:
-    st.info(f"指定目录 {report_label(requested)} 不包含完整的当前版报告；当前查看 {report_label(path)}。可在上方切换报告，原目录未修改。")
+    st.info(f"指定目录 {report_label(requested)} 不包含完整的当前版报告；当前查看 {report_label(path)}。可在侧栏切换报告，原目录未修改。")
 
 try:
     metrics = json.loads((path / "metrics.json").read_text(encoding="utf-8"))
@@ -462,12 +458,18 @@ try:
     segments = pd.read_csv(path / "segment_summary.csv")
     policy = pd.read_csv(path / "policy_metrics.csv")
     importance = pd.read_csv(path / "feature_importance.csv")
-    predictions = pd.read_csv(path / "predictions.csv")
+    predictions = pd.read_csv(path / "predictions.csv", dtype={"customerID": "string"})
     assignments = pd.read_csv(path / "policy_assignments.csv", dtype={"customerID": "string"})
     context_file = path / "ai_customer_context.csv"
     ai_context = pd.read_csv(context_file, dtype={"customerID": "string"}) if context_file.is_file() else pd.DataFrame()
     if "预测流失风险分数" in assignments.columns and "排序分数" not in assignments.columns:
         assignments = assignments.rename(columns={"预测流失风险分数": "排序分数"})
+    context_recovered = ai_context.empty
+    if context_recovered:
+        ai_context = pd.DataFrame(context_from_report(
+            assignments.to_dict("records"), predictions.to_dict("records"),
+            metrics["交叉验证"]["选择模型"],
+        ))
 except (OSError, ValueError, json.JSONDecodeError, pd.errors.ParserError) as exc:
     st.error(f"无法读取项目报告：{exc}。请切换分析报告，或使用 run_project.py 生成新报告。")
     st.stop()
@@ -475,29 +477,47 @@ except (OSError, ValueError, json.JSONDecodeError, pd.errors.ParserError) as exc
 selected_model = metrics["交叉验证"]["选择模型"]
 selected_model_metrics = metrics["模型"][selected_model]
 selected_policy = policy.loc[policy["策略"].eq(selected_model)].iloc[0]
-st.markdown(
-    f'<div class="status-strip"><span class="status-chip">● 离线评估</span><span>主模型：<strong>{escape(selected_model)}</strong></span><span>测试集：<strong>{metrics["测试集样本数"]:,}</strong> 名客户</span><span>固定触达容量：<strong>{metrics["名额比例"]:.0%}</strong></span><span>数据口径：公开快照，不代表线上收益</span></div>',
-    unsafe_allow_html=True,
-)
-with st.container(horizontal=True):
-    st.metric("客户总量", f"{metrics['样本数']:,}", border=True)
-    st.metric("测试集 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
-    st.metric(
-        POLICY_METRIC_LABELS["Precision@K"], f"{selected_policy['Precision@K']:.1%}",
-        border=True,
-        help="在风险排名前 K 名的优先名单中，历史流失客户所占的比例（Precision@K）。",
-    )
-    st.metric(
-        POLICY_METRIC_LABELS["Lift@K"], f"{selected_policy['Lift@K']:.2f}×",
-        border=True,
-        help="优先名单命中率 ÷ 测试集整体流失率，表示相对随机选择的提升倍数（Lift@K）。",
-    )
 
-with st.expander("数据来源与评估口径"):
-    st.write("公开电信客户快照；分群使用训练集，模型依据训练集五折 AP 选择。测试结果为已参与开发分析的公开数据基准，不是独立盲测；历史流失识别不等于真实挽留收益。")
-if selected_page == "客户差异":
-    section_intro("客户分群", "训练集客户分群", "先看客户结构差异，再决定模型排序应该服务哪类触达策略。")
-    render_table(overall, percent_columns=("流失率",))
+if selected_page == "报告总览":
+    st.markdown('<div class="section-kicker">客户留存分析 · 风险工作台</div>', unsafe_allow_html=True)
+    st.title("电信客户流失分析与用户排序")
+    st.markdown('<p class="hero-subtitle">分析客户流失差异，比较模型在有限联系名额下的排序效果。</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="status-strip"><span class="status-chip">● 离线评估</span>'
+        f'<span>主模型：<strong>{escape(selected_model)}</strong></span>'
+        f'<span>测试集：<strong>{metrics["测试集样本数"]:,}</strong> 名客户</span>'
+        f'<span>固定触达容量：<strong>{metrics["名额比例"]:.0%}</strong></span>'
+        '<span>公开数据 · 离线结果</span></div>',
+        unsafe_allow_html=True,
+    )
+    with st.container(horizontal=True):
+        st.metric("客户总量", f"{metrics['样本数']:,}", border=True)
+        st.metric("测试集 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
+        st.metric(
+            POLICY_METRIC_LABELS["Precision@K"], f"{selected_policy['Precision@K']:.1%}", border=True,
+            help="优先名单中历史流失客户所占比例。",
+        )
+        st.metric(
+            POLICY_METRIC_LABELS["Lift@K"], f"{selected_policy['Lift@K']:.2f}×", border=True,
+            help="优先名单命中率相对于随机选择的提升倍数。",
+        )
+    st.info(
+        f"在测试集 {metrics['测试集样本数']:,} 名客户中，主模型将 {int(selected_policy['名额']):,} 人列为优先触达对象，"
+        f"其中 {int(selected_policy['命中流失']):,} 人的历史标签为流失。"
+    )
+    with st.expander("数据来源与评估口径"):
+        st.write(
+            f"使用公开电信客户数据。分群统计和 {metrics['交叉验证']['折数']} 折模型选择均在训练集完成。"
+            "公开数据已用于开发分析，测试结果不是独立盲测。名单命中率不能当作实际挽留成功率。"
+        )
+
+elif selected_page == "客户差异":
+    page_header("训练集客户分群", "按合同、在网时长和月费比较客户规模与历史流失率。")
+    summary = overall.iloc[0]
+    with st.container(horizontal=True):
+        st.metric("训练集客户数", f"{int(summary['客户数']):,}", border=True)
+        st.metric("训练集流失人数", f"{int(summary['流失人数']):,}", border=True)
+        st.metric("训练集流失率", f"{summary['流失率']:.1%}", border=True)
     dimension = st.selectbox("选择分群维度", segments["分群维度"].drop_duplicates().tolist())
     chart = segments.loc[segments["分群维度"].eq(dimension), ["分群", "流失率"]].copy()
     contract_labels = {"Month-to-month": "月付合同", "One year": "一年合同", "Two year": "两年合同"}
@@ -507,11 +527,16 @@ if selected_page == "客户差异":
     shown["小样本"] = shown["小样本"].map({True: "是", False: "否"})
     render_table(shown, percent_columns=("流失率",))
     render_segment_chart(chart)
-    st.caption("所有分群只使用训练集。差异是描述性关联，不说明合同或费用导致流失；客户数少于 30 的组应谨慎解读。")
+    st.caption("分群仅统计训练集。少于 30 人的组已标记为小样本；流失率差异不能解释为因果关系。")
 
 elif selected_page == "模型验证":
     cv = metrics["交叉验证"]
-    section_intro("模型验证", "模型验证", "用训练集五折 AP 选择主模型，再用固定测试集做一次性离线评估。")
+    page_header("模型验证", "比较逻辑回归与随机森林的交叉验证表现和测试集结果。")
+    with st.container(horizontal=True):
+        st.metric("主模型", selected_model, border=True)
+        st.metric("五折 AP 均值", f"{cv['AP均值'][selected_model]:.3f}", border=True)
+        st.metric("测试集 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
+        st.metric("测试集 ROC-AUC", f"{selected_model_metrics['ROC-AUC']:.3f}", border=True)
     st.caption(f"根据训练集五折 AP 均值选择模型：{cv['选择模型']}。测试集没有参与选择。")
     cv_frame = pd.DataFrame({
         "模型": list(cv["AP均值"]),
@@ -526,22 +551,37 @@ elif selected_page == "模型验证":
         "Recall（查全率）": "查全率",
         "AP（平均精确率）": "平均精确率 AP",
     })
-    st.markdown('<div class="section-kicker">测试集证据</div>', unsafe_allow_html=True)
     st.subheader("固定测试集指标")
     render_table(metric_frame, decimal_columns=("准确率", "查准率", "查全率", "F1", "ROC-AUC", "平均精确率 AP"))
-    st.caption("AP（平均精确率）适合观察正类较少时的排序质量；Accuracy 不能单独代表模型好坏。分类阈值固定为 0.5。")
+    st.caption("分类指标使用 0.5 阈值；AP 和 ROC-AUC 根据模型分数计算。")
     render_model_charts(predictions, metrics)
     importance["特征"] = importance.feature.map(feature_label)
     importance = importance.rename(columns={"importance": "重要性"})[["特征", "重要性"]].head(15)
     st.subheader("随机森林关注的特征")
     render_feature_chart(importance)
-    st.caption("特征重要性描述模型使用方式，不代表因果关系。")
+    st.caption("此图来自随机森林，不能用来解释逻辑回归；重要性也不代表因果关系。")
 
 elif selected_page == "触达排序":
-    section_intro("触达策略", "固定 10% 名额下的策略对照", "把模型分数转换成有限人力下的优先触达顺序，并与规则基线比较。")
+    page_header(f"固定 {metrics['名额比例']:.0%} 名额下的策略对照", "联系人数相同时，哪种排序能找到更多历史流失客户？")
+    st.caption(f"以下指标对应主模型：{selected_model}；表格与示例名单可用于比较其他策略。")
+    with st.container(horizontal=True):
+        st.metric("优先触达名额", f"{int(selected_policy['名额']):,}", border=True)
+        st.metric("命中历史流失人数", f"{int(selected_policy['命中流失']):,}", border=True)
+        st.metric(
+            POLICY_METRIC_LABELS["Precision@K"], f"{selected_policy['Precision@K']:.1%}", border=True,
+            help="优先名单中历史流失客户所占比例（Precision@K）。",
+        )
+        st.metric(
+            POLICY_METRIC_LABELS["Lift@K"], f"{selected_policy['Lift@K']:.2f}×", border=True,
+            help="优先名单命中率 ÷ 测试集整体流失率（Lift@K）。",
+        )
     render_policy_chart(policy)
-    render_table(policy, percent_columns=("Precision@K", "Recall@K"), decimal_columns=("Lift@K",))
-    st.caption("同一测试集、同一名额，向下取整；随机策略一行是数学期望，不是一份随机客户名单。入选名单只是历史测试样本的离线核验。")
+    shown_policy = policy.copy()
+    shown_policy["命中流失"] = shown_policy["命中流失"].map(
+        lambda value: f"{value:.0f}" if float(value).is_integer() else f"{value:.2f}"
+    )
+    render_table(shown_policy, percent_columns=("Precision@K", "Recall@K"), decimal_columns=("Lift@K",))
+    st.caption("各策略使用同一测试集和相同名额。随机策略为期望值，因此命中人数可能有小数。")
     strategy = st.selectbox("查看策略的测试集示例", assignments["策略"].drop_duplicates().tolist())
     sample = assignments.loc[assignments["策略"].eq(strategy)].head(30).copy()
     sample = sample.rename(columns={
@@ -551,26 +591,47 @@ elif selected_page == "触达排序":
     sample = sample.drop(columns="策略")
     render_table(sample, decimal_columns=("排序分数",))
 
-else:
-    section_intro("AI 辅助", "AI 风险解读与触达建议", "统计模型负责排序，AI 只把白名单证据整理为可复核的中文解释。")
-    st.caption("AI 不修改模型分数、阈值或客户名单；没有远程接口时使用离线模板。")
-    if ai_context.empty:
-        st.info("当前报告没有 AI 客户上下文。请用 run_project.py 重新生成一份报告；旧报告仍可查看前三个页面。")
+elif selected_page == "AI风险解读":
+    page_header("AI 风险解读与触达建议", "查看优先名单中的客户资料，生成联系前需要核实的事项。")
+    settings = ai_settings()
+    if settings["CHURN_AI_BASE_URL"] and settings["CHURN_AI_MODEL"]:
+        st.caption(f"远程模型已配置：{settings['CHURN_AI_MODEL']}；点击按钮后才发起调用。")
     else:
+        st.info("尚未配置远程接口，点击后将生成模板解读。接口配置方法见 README。")
+    if ai_context.empty:
+        st.info("当前主模型没有入选客户，暂时无法生成逐客解读。请检查报告中的触达名额。")
+    else:
+        if context_recovered:
+            st.info("这份报告缺少完整客户资料，解读仅使用已有排名、分数和在网时长。")
         customer_ids = ai_context["customerID"].astype("string").tolist()
-        selected_customer = st.selectbox("选择主模型固定容量优先客户", customer_ids)
+        customer_choices = st.session_state.setdefault("ai_customer_choices", {})
+        previous_customer = customer_choices.get(str(path))
+        selected_customer = st.selectbox(
+            "选择主模型固定容量优先客户", customer_ids,
+            index=customer_ids.index(previous_customer) if previous_customer in customer_ids else 0,
+            key=f"ai_customer_{path}",
+        )
+        customer_choices[str(path)] = selected_customer
         selected_row = ai_context.loc[
             ai_context["customerID"].eq(selected_customer)
         ].iloc[0].to_dict()
         level, level_class = risk_level(selected_row["risk_score"])
         st.markdown(
-            f'<div class="risk-card {level_class}"><div class="risk-label">当前客户风险等级</div><div class="risk-value">{escape(level)}</div><div class="risk-detail">排序名次 #{int(selected_row["rank"])} · 排序分数 {float(selected_row["risk_score"]):.4f} · 主模型 {escape(str(selected_row["model_name"]))}</div></div>',
+            f'<div class="risk-card {level_class}"><div class="risk-label">当前客户风险等级</div>'
+            f'<div class="risk-value">{escape(level)}</div><div class="risk-detail">'
+            f'排序名次 #{int(selected_row["rank"])} · 排序分数 {float(selected_row["risk_score"]):.4f} · '
+            f'主模型 {escape(str(selected_row["model_name"]))}</div></div>',
             unsafe_allow_html=True,
         )
-        render_table(ai_display_frame(selected_row))
-        st.caption("上下文不包含测试集真实流失标签；风险分数用于排序，分组流失率只表示历史关联。")
+        with st.expander("客户资料与分群统计"):
+            render_table(ai_display_frame(selected_row))
+        st.caption("发送给 AI 的资料不含真实流失标签。排序分数未经概率校准。")
+        explanations = st.session_state.setdefault("ai_explanations", {})
+        # 客户资料变化后，不再展示旧资料对应的解读。
+        explanation_key = (str(path), json.dumps(selected_row, sort_keys=True, ensure_ascii=False))
         if st.button("生成 AI 风险解读", type="primary"):
-            with st.spinner("正在整理客户风险解读…"):
-                explanation = generate_explanation(selected_row)
+            with st.spinner("正在生成解读…"):
+                explanations[explanation_key] = generate_explanation(selected_row, settings=settings)
+        if explanation_key in explanations:
             with st.container(key="ai-analysis"):
-                render_ai_explanation(explanation)
+                render_ai_explanation(explanations[explanation_key])

@@ -7,7 +7,6 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib import font_manager
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
@@ -29,12 +28,9 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-available_fonts = {font.name for font in font_manager.fontManager.ttflist}
-for font_name in ("Microsoft YaHei", "SimHei", "Noto Sans CJK SC"):
-    if font_name in available_fonts:
-        plt.rcParams["font.sans-serif"] = [font_name]
-        break
-plt.rcParams["axes.unicode_minus"] = False
+from chart_font import configure_chart_font
+
+configure_chart_font()
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DATA = ROOT / "data" / "WA_Fn-UseC_-Telco-Customer-Churn.csv"
@@ -164,7 +160,7 @@ def _monthly_group(value):
 
 
 def build_ai_context(X_test, test_ids, selected_model, scores, order, budget_count, segments, overall):
-    """生成只含白名单字段的主模型优先名单，隔离测试集真实标签。"""
+    """导出主模型入选客户的资料，不包含测试集标签。"""
     rate_maps = {
         dimension: group.set_index("分群")["流失率"].to_dict()
         for dimension, group in segments.groupby("分群维度")

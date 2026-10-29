@@ -1,5 +1,6 @@
-"""根据客户排序证据生成解读；接口不可用时使用离线模板。"""
+"""调用远程模型解读客户资料，失败时返回模板。"""
 import json
+import math
 import os
 from pathlib import Path
 from urllib import error as urllib_error
@@ -31,7 +32,6 @@ def _load_project_env(path=None):
         os.environ[key] = value
 
 
-# 只读取 CHURN_AI_ 配置，不加载其他环境变量。
 _load_project_env()
 
 
@@ -68,14 +68,38 @@ def _clean_context(context):
     }
 
 
+def context_from_report(assignments, predictions, model_name):
+    """从旧报告的主模型名单中提取排名、分数和在网时长。"""
+    tenure_by_id = {str(row["customerID"]): row.get("tenure") for row in predictions}
+    selected = sorted(
+        (row for row in assignments if row["策略"] == model_name),
+        key=lambda row: (int(row["排名"]), str(row["customerID"])),
+    )
+    context = []
+    for row in selected:
+        customer_id = str(row["customerID"])
+        rank, score = int(row["排名"]), float(row["排序分数"])
+        facts = {"customerID": customer_id, "model_name": model_name, "rank": rank, "risk_score": score}
+        evidence = [f"主模型排序名次第 {rank}，排序分数 {score:.4f}"]
+        tenure = tenure_by_id.get(customer_id)
+        if tenure is not None and math.isfinite(float(tenure)):
+            facts["tenure"] = float(tenure)
+            evidence.append(f"在网时长 {float(tenure):g} 个月")
+        facts["risk_evidence"] = "；".join(evidence)
+        context.append(facts)
+    return context
+
+
 def build_prompt(context):
     facts = _clean_context(context)
     lines = [
-        "你是客户运营分析助手。请严格依据给定事实，输出中文的风险摘要、证据、触达建议和限制说明。",
+        "请根据客户资料写一份中文联系备注，包括风险摘要、依据、联系建议和限制说明。",
+        "直接写客户情况和需要核实的事，每条一两句话。不写宣传用语，不反复复述分数。",
         "风险分数只用于排序，不是经过校准的真实概率。分群流失率是历史关联，不得写成因果结论。",
         "不要声称客户一定流失或一定能被挽回，不要补充输入中没有的客户信息，不要输出真实标签。",
         "建议最多三条，动作应是人工复核、服务沟通或方案说明方向，不得自动执行优惠或联系。",
-        "请返回 JSON 对象，字段为 summary、evidence、actions、limitations；每个字段使用中文字符串或字符串数组。",
+        "英文类别值请译成中文，如 Month-to-month 写月付合同，Fiber optic 写光纤，Electronic check 写电子支票。",
+        "请返回 JSON 对象：summary、limitations 为中文字符串，evidence、actions 为中文字符串数组。",
         "",
         "客户事实：",
     ]
@@ -105,21 +129,21 @@ def template_explanation(context, status="离线模板模式"):
 
     actions = []
     if facts.get("Contract") == "Month-to-month":
-        actions.append("优先核实客户对当前套餐的使用感受，并说明可选的长期合同方案。")
+        actions.append("询问客户对套餐是否满意，有需要时再介绍长期合同方案。")
     if facts.get("TechSupport") == "No":
-        actions.append("先询问网络或技术支持体验，再决定是否需要人工服务跟进。")
+        actions.append("询问是否遇到网络或技术问题，按实际情况安排客服跟进。")
     if facts.get("PaymentMethod") == "Electronic check":
-        actions.append("沟通时确认扣款方式和账单提醒是否符合客户习惯。")
+        actions.append("确认扣款是否方便、能否及时收到账单提醒。")
     if not actions:
-        actions.append("由人工结合近期服务记录确认客户需求，再选择合适的沟通内容。")
+        actions.append("先查看近期服务记录，再联系客户确认需求。")
     actions = actions[:3]
 
     return {
         "mode": status,
-        "summary": f"该客户在当前测试集排序中属于风险{level}的优先关注对象，排序分数为 {score:.4f}。",
+        "summary": f"客户排序分数为 {score:.4f}，按当前分级属于{level}风险。联系前需核实近期服务情况。",
         "evidence": evidence,
         "actions": actions,
-        "limitations": "这是基于公开客户快照的离线辅助解读，分群差异不等于因果关系，建议需由人工复核。",
+        "limitations": "资料来自历史客户快照，无法据此确认流失原因。联系建议需由人工核实。",
     }
 
 
@@ -151,10 +175,10 @@ def _parse_model_response(payload):
     result = json.loads(text)
     if not isinstance(result, dict):
         raise ValueError("接口响应不是对象")
-    summary = str(result.get("summary", "")).strip()
+    summary = "\n".join(_as_list(result.get("summary")))
     evidence = _as_list(result.get("evidence"))
     actions = _as_list(result.get("actions"))[:3]
-    limitations = str(result.get("limitations", "")).strip()
+    limitations = "\n".join(_as_list(result.get("limitations")))
     # 缺字段或空列表都交给调用方回退模板。
     if not summary or not evidence or not actions or not limitations:
         raise ValueError("接口响应缺少完整的风险解读字段")
@@ -176,19 +200,20 @@ def _as_list(value):
     return [text] if text else []
 
 
-def generate_explanation(context):
+def generate_explanation(context, settings=None):
     """调用远程接口；配置缺失或调用失败时返回模板解读。"""
-    base_url = os.getenv("CHURN_AI_BASE_URL", "").strip()
-    model = os.getenv("CHURN_AI_MODEL", "").strip()
+    settings = os.environ if settings is None else settings
+    base_url = str(settings.get("CHURN_AI_BASE_URL", "")).strip()
+    model = str(settings.get("CHURN_AI_MODEL", "")).strip()
     if not base_url or not model:
         return template_explanation(context)
 
     try:
-        timeout = float(os.getenv("CHURN_AI_TIMEOUT_SECONDS", "20"))
+        timeout = float(settings.get("CHURN_AI_TIMEOUT_SECONDS", "20"))
         if timeout <= 0:
             raise ValueError("超时时间必须为正数")
         headers = {"Content-Type": "application/json"}
-        api_key = os.getenv("CHURN_AI_API_KEY", "").strip()
+        api_key = str(settings.get("CHURN_AI_API_KEY", "")).strip()
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         body = json.dumps({

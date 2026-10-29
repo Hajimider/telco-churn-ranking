@@ -5,7 +5,7 @@
 在项目根目录运行：
 
 ```bash
-python run_project.py --data data/WA_Fn-UseC_-Telco-Customer-Churn.csv --output outputs/project_v1
+python run_project.py --output outputs/run_02
 ```
 
 输出目录必须不存在或为空。完整运行步骤和字段要求见[项目 README](../README.md)。
