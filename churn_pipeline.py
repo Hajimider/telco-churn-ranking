@@ -31,6 +31,11 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from scipy.stats import chi2_contingency
 
 from chart_font import configure_chart_font
+from lightgbm_tuning import tune_lightgbm
+from model_explanation import explain_logistic_regression, explain_shap
+from survival_analysis import survival_analysis
+from statistical_inference import bootstrap_metrics, compare_models_paired_t_test
+from budget_analysis import budget_sensitivity_analysis
 
 configure_chart_font()
 
@@ -45,6 +50,12 @@ REQUIRED_COLUMNS = {
     "PaperlessBilling", "PaymentMethod", "MonthlyCharges", "TotalCharges",
 }
 CATEGORICAL_COLUMNS = sorted(REQUIRED_COLUMNS - {"customerID", "Churn"} - set(NUMERIC_COLUMNS))
+
+# 特征工程后的数值列和类别列
+ENGINEERED_NUMERIC = NUMERIC_COLUMNS + [
+    "charges_deviation", "service_count", "tenure_contract_month", "tenure_contract_year"
+]
+ENGINEERED_CATEGORICAL = CATEGORICAL_COLUMNS  # 类别列保持不变
 AI_CONTEXT_COLUMNS = [
     "tenure", "Contract", "MonthlyCharges", "InternetService", "PaymentMethod",
     "TechSupport", "OnlineSecurity",
@@ -79,8 +90,55 @@ def prepare_data(frame):
     return X, labels.astype(int), ids
 
 
-def make_pipeline(estimator):
+def engineer_features(X):
+    """创建衍生特征以增强模型表现。"""
+    X = X.copy()
+
+    # 费用相关特征
+    X["charges_deviation"] = np.where(
+        X["tenure"] > 0,
+        X["TotalCharges"] / X["tenure"] - X["MonthlyCharges"],
+        0
+    )
+    X["has_high_charges"] = (X["MonthlyCharges"] >= 70).astype(int)
+
+    # 服务组合特征
+    service_cols = ["OnlineSecurity", "OnlineBackup", "DeviceProtection",
+                    "TechSupport", "StreamingTV", "StreamingMovies"]
+    X["service_count"] = sum((X[col] == "Yes").astype(int) for col in service_cols)
+    X["has_internet"] = (X["InternetService"] != "No").astype(int)
+
+    protection_cols = ["OnlineSecurity", "OnlineBackup", "DeviceProtection", "TechSupport"]
+    X["full_protection"] = (sum((X[col] == "Yes").astype(int) for col in protection_cols) == 4).astype(int)
+
+    # 客户生命周期特征
+    X["is_new_customer"] = (X["tenure"] <= 6).astype(int)
+    X["is_loyal_customer"] = (X["tenure"] >= 36).astype(int)
+    X["tenure_contract_month"] = (X["Contract"] == "Month-to-month").astype(int) * X["tenure"]
+    X["tenure_contract_year"] = (X["Contract"].isin(["One year", "Two year"])).astype(int) * X["tenure"]
+
+    # 支付与账单特征
+    X["auto_payment"] = (X["PaymentMethod"].isin(["Bank transfer (automatic)",
+                                                    "Credit card (automatic)"])).astype(int)
+    X["paperless_risky"] = ((X["PaperlessBilling"] == "Yes") &
+                            (X["PaymentMethod"] == "Electronic check")).astype(int)
+
+    # 家庭客户特征
+    X["has_family"] = ((X["Partner"] == "Yes") | (X["Dependents"] == "Yes")).astype(int)
+    X["single_senior"] = ((X["SeniorCitizen"] == 1) &
+                          (X["Partner"] == "No") &
+                          (X["Dependents"] == "No")).astype(int)
+
+    return X
+
+
+def make_pipeline(estimator, numeric_cols=None, categorical_cols=None):
     """预处理随模型一起拟合，避免交叉验证时泄漏验证折信息。"""
+    if numeric_cols is None:
+        numeric_cols = ENGINEERED_NUMERIC
+    if categorical_cols is None:
+        categorical_cols = ENGINEERED_CATEGORICAL
+
     numeric = Pipeline([
         ("fill_missing", SimpleImputer(strategy="median")),
         ("scale", StandardScaler()),
@@ -90,8 +148,8 @@ def make_pipeline(estimator):
         ("one_hot", OneHotEncoder(handle_unknown="ignore")),
     ])
     preprocess = ColumnTransformer([
-        ("numeric", numeric, NUMERIC_COLUMNS),
-        ("categorical", categorical, CATEGORICAL_COLUMNS),
+        ("numeric", numeric, numeric_cols),
+        ("categorical", categorical, categorical_cols),
     ])
     return Pipeline([("preprocess", preprocess), ("model", estimator)])
 
@@ -304,6 +362,10 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
     if not 0.1 <= test_size <= 0.5:
         raise ValueError("测试集比例需在 0.1 到 0.5 之间。")
     X, y, ids = prepare_data(frame)
+
+    # 应用特征工程
+    X = engineer_features(X)
+
     if len(frame) < 50 or y.value_counts().min() < 5:
         raise ValueError("样本量不足：至少需要 50 行，并且每类至少有 5 行以支持五折分层验证。")
 
@@ -327,6 +389,25 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
         "随机森林": make_pipeline(RandomForestClassifier(
             n_estimators=250, min_samples_leaf=3, random_state=random_state, n_jobs=-1)),
     }
+
+    # 使用 Optuna 调优 LightGBM
+    print("正在优化 LightGBM 超参数（100 轮）...")
+    from lightgbm import LGBMClassifier
+
+    # 需要先转换特征，因为 tune_lightgbm 需要处理后的数值特征
+    temp_pipeline = make_pipeline(LogisticRegression())
+    temp_pipeline.fit(X_train.iloc[:100], y_train.iloc[:100])  # 只为获取特征名
+    X_train_transformed = temp_pipeline.named_steps["preprocess"].fit_transform(X_train, y_train)
+
+    best_lgb_params, best_lgb_score, _ = tune_lightgbm(
+        X_train_transformed, y_train.to_numpy(), n_trials=100, random_state=random_state, n_jobs=-1)
+
+    # 创建 LightGBM pipeline
+    lgb_model = LGBMClassifier(**best_lgb_params)
+    models["LightGBM"] = make_pipeline(lgb_model)
+
+    print(f"LightGBM 最优 CV AP: {best_lgb_score:.4f}")
+
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
     cv_scores = {
         name: cross_val_score(model, X_train, y_train, scoring="average_precision", cv=cv, n_jobs=1)
@@ -349,6 +430,8 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
         "random_state": int(random_state),
         "test_size": float(test_size),
         "名额比例": 0.10,
+        "LightGBM最优参数": {k: (float(v) if isinstance(v, (int, float, np.number)) else v)
+                            for k, v in best_lgb_params.items()},
         "交叉验证": {
             "折数": 5,
             "选择模型": selected_model,
@@ -385,7 +468,38 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
             "阈值测试集F1": float(f1_score(y_test, threshold_predicted, zero_division=0)),
         }
 
+    # Bootstrap 置信区间
+    print("正在计算 Bootstrap 置信区间...")
+    for name, probability in model_scores.items():
+        boot_ci = bootstrap_metrics(y_test.to_numpy(), probability, n_bootstrap=1000, random_state=random_state)
+        metrics["模型"][name]["Bootstrap置信区间"] = boot_ci
+
+    # 模型比较统计检验
+    model_comparisons = []
+    model_names = list(cv_scores.keys())
+    for i in range(len(model_names)):
+        for j in range(i + 1, len(model_names)):
+            comparison = compare_models_paired_t_test(
+                cv_scores[model_names[i]],
+                cv_scores[model_names[j]],
+                model_names[i],
+                model_names[j]
+            )
+            model_comparisons.append(comparison)
+
+    metrics["模型比较检验"] = model_comparisons
+
     output = prepare_output(output_dir)
+
+    # 生存分析
+    print("正在进行生存分析...")
+    km_results, logrank_summary, cox_results = survival_analysis(train_frame, output)
+    metrics["生存分析"] = {
+        "KM中位生存时间": km_results.to_dict(orient="records"),
+        "LogRank检验": logrank_summary,
+        "Cox模型": "见 cox_results.csv"
+    }
+
     predictions.to_csv(output / "predictions.csv", index=False, encoding="utf-8-sig")
     overall.to_csv(output / "overall_summary.csv", index=False, encoding="utf-8-sig")
     segments.to_csv(output / "segment_summary.csv", index=False, encoding="utf-8-sig")
@@ -438,6 +552,18 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
         "策略", "customerID", "actual_churn", "排名", "排序分数"
     ]).to_csv(output / "policy_assignments.csv", index=False, encoding="utf-8-sig")
 
+    # 名额敏感性分析
+    print("正在进行名额敏感性分析...")
+    sensitivity_df, optimal_k = budget_sensitivity_analysis(
+        y_test, selected_probability, test_ids, output,
+        k_range=np.arange(0.05, 0.51, 0.05)
+    )
+    metrics["名额敏感性"] = {
+        "最优名额比例": float(optimal_k),
+        "最优净收益": float(sensitivity_df.loc[sensitivity_df["K比例"] == optimal_k, "期望净收益"].values[0]),
+        "详见": "budget_sensitivity.csv"
+    }
+
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     for ax, name in zip(axes, models):
         predicted = predictions[f"{name}_prediction"].to_numpy()
@@ -463,6 +589,24 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
     importance = pd.DataFrame({"feature": names, "importance": forest.named_steps["model"].feature_importances_})
     importance.sort_values("importance", ascending=False).to_csv(
         output / "feature_importance.csv", index=False, encoding="utf-8-sig")
+
+    # 模型解释：逻辑回归系数和 SHAP
+    print("正在生成模型解释...")
+    lr_model = models["逻辑回归"]
+    lr_feature_names = lr_model.named_steps["preprocess"].get_feature_names_out()
+    lr_coef_df = explain_logistic_regression(lr_model, X_train, y_train, lr_feature_names,
+                                              n_bootstrap=1000, random_state=random_state)
+    lr_coef_df.to_csv(output / "logistic_coefficients.csv", index=False, encoding="utf-8-sig")
+
+    # SHAP 解释（针对 LightGBM 或随机森林）
+    if selected_model == "LightGBM":
+        shap_model = models["LightGBM"]
+    else:
+        shap_model = models["随机森林"]
+
+    shap_feature_names = shap_model.named_steps["preprocess"].get_feature_names_out()
+    explain_shap(shap_model, X_test, shap_feature_names, output, max_display=20)
+
     return metrics
 
 
