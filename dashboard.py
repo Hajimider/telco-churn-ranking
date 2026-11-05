@@ -193,10 +193,14 @@ def render_table(frame, percent_columns=(), decimal_columns=()):
     shown = frame.copy()
     for column in percent_columns:
         if column in shown:
-            shown[column] = shown[column].map(lambda value: f"{float(value):.1%}")
+            shown[column] = shown[column].map(
+                lambda value: "—" if pd.isna(value) else f"{float(value):.1%}"
+            )
     for column in decimal_columns:
         if column in shown:
-            shown[column] = shown[column].map(lambda value: f"{float(value):.3f}")
+            shown[column] = shown[column].map(
+                lambda value: "—" if pd.isna(value) else f"{float(value):.3f}"
+            )
     shown = shown.rename(columns=POLICY_METRIC_LABELS)
     st.markdown(
         '<div class="table-wrap">' + shown.to_html(index=False, classes="data-table", escape=True) + '</div>',
@@ -462,6 +466,10 @@ try:
     assignments = pd.read_csv(path / "policy_assignments.csv", dtype={"customerID": "string"})
     context_file = path / "ai_customer_context.csv"
     ai_context = pd.read_csv(context_file, dtype={"customerID": "string"}) if context_file.is_file() else pd.DataFrame()
+    inference_file = path / "segment_inference.csv"
+    inference = pd.read_csv(inference_file) if inference_file.is_file() else pd.DataFrame()
+    cross_segments_file = path / "contract_tenure_segments.csv"
+    cross_segments = pd.read_csv(cross_segments_file) if cross_segments_file.is_file() else pd.DataFrame()
     if "预测流失风险分数" in assignments.columns and "排序分数" not in assignments.columns:
         assignments = assignments.rename(columns={"预测流失风险分数": "排序分数"})
     context_recovered = ai_context.empty
@@ -525,9 +533,26 @@ elif selected_page == "客户差异":
     shown = segments.loc[segments["分群维度"].eq(dimension)].copy()
     shown["分群"] = shown["分群"].replace(contract_labels)
     shown["小样本"] = shown["小样本"].map({True: "是", False: "否"})
-    render_table(shown, percent_columns=("流失率",))
+    render_table(shown, percent_columns=("流失率", "流失率下限", "流失率上限"))
     render_segment_chart(chart)
-    st.caption("分群仅统计训练集。少于 30 人的组已标记为小样本；流失率差异不能解释为因果关系。")
+    st.caption("分群仅统计训练集；区间为 95% Wilson 区间。少于 30 人的组已标记为小样本，差异不代表因果关系。")
+    if not inference.empty:
+        st.subheader("分群与历史流失的关联检验")
+        inference_shown = inference.rename(columns={
+            "p值": "原始 p 值", "校正后p值": "Holm 校正 p 值",
+        })
+        render_table(inference_shown, decimal_columns=(
+            "卡方统计量", "Cramér's V", "原始 p 值", "Holm 校正 p 值",
+        ))
+        st.caption("卡方检验衡量分群与历史流失标签的关联；Cramér’s V 表示关联强度，不说明因果。")
+    else:
+        st.info("此旧版报告未包含统计检验结果。重新运行项目可生成。")
+    if not cross_segments.empty:
+        st.subheader("合同类型 × 在网时长")
+        render_table(cross_segments, percent_columns=("流失率", "流失率下限", "流失率上限"))
+        st.caption("二维分群用于描述客户结构；小样本组合的流失率不宜单独解读。")
+    else:
+        st.info("此旧版报告未包含合同与在网时长交叉分群。重新运行项目可生成。")
 
 elif selected_page == "模型验证":
     cv = metrics["交叉验证"]
@@ -545,15 +570,36 @@ elif selected_page == "模型验证":
     })
     render_table(cv_frame, decimal_columns=("五折 AP 均值", "五折 AP 标准差"))
     render_cv_chart(cv)
-    metric_frame = pd.DataFrame(metrics["模型"]).T.reset_index(names="模型")
-    metric_frame = metric_frame.rename(columns={
+    full_metric_frame = pd.DataFrame(metrics["模型"]).T.reset_index(names="模型")
+    metric_frame = full_metric_frame.rename(columns={
         "Accuracy（准确率）": "准确率", "Precision（查准率）": "查准率",
         "Recall（查全率）": "查全率",
         "AP（平均精确率）": "平均精确率 AP",
     })
+    metric_frame = metric_frame[[
+        "模型", "准确率", "查准率", "查全率",
+        "F1", "ROC-AUC", "平均精确率 AP",
+    ]]
     st.subheader("固定测试集指标")
     render_table(metric_frame, decimal_columns=("准确率", "查准率", "查全率", "F1", "ROC-AUC", "平均精确率 AP"))
-    st.caption("分类指标使用 0.5 阈值；AP 和 ROC-AUC 根据模型分数计算。")
+    st.caption("上表分类指标使用 0.5 阈值；AP 和 ROC-AUC 根据模型分数计算。")
+    threshold_columns = [
+        "模型", "折外F1阈值", "阈值测试集查准率", "阈值测试集查全率", "阈值测试集F1",
+    ]
+    if all(column in full_metric_frame.columns for column in threshold_columns[1:]):
+        threshold_frame = full_metric_frame[threshold_columns].rename(columns={
+            "折外F1阈值": "训练集折外选择阈值",
+            "阈值测试集查准率": "测试集查准率",
+            "阈值测试集查全率": "测试集查全率",
+            "阈值测试集F1": "测试集F1",
+        })
+        st.subheader("训练集折外阈值对照")
+        render_table(threshold_frame, decimal_columns=(
+            "训练集折外选择阈值", "测试集查准率", "测试集查全率", "测试集F1",
+        ))
+        st.caption("阈值在训练集五折折外预测中按 F1 选择，再固定到测试集评估；它不代表业务成本最优。")
+    else:
+        st.info("此旧版报告未包含折外阈值评估。重新运行项目可生成。")
     render_model_charts(predictions, metrics)
     importance["特征"] = importance.feature.map(feature_label)
     importance = importance.rename(columns={"importance": "重要性"})[["特征", "重要性"]].head(15)
