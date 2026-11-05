@@ -42,6 +42,24 @@ Thumbs.db
 !/outputs/project_v1/feature_importance.csv
 !/outputs/project_v1/confusion_matrices.png
 !/outputs/project_v1/roc_curve.png
+!/outputs/project_v1/segment_inference.csv
+!/outputs/project_v1/contract_tenure_segments.csv
+
+# 上传最新统计分析和阈值评估演示报告
+!/outputs/project_v2/
+/outputs/project_v2/*
+!/outputs/project_v2/metrics.json
+!/outputs/project_v2/overall_summary.csv
+!/outputs/project_v2/segment_summary.csv
+!/outputs/project_v2/policy_metrics.csv
+!/outputs/project_v2/policy_assignments.csv
+!/outputs/project_v2/predictions.csv
+!/outputs/project_v2/ai_customer_context.csv
+!/outputs/project_v2/feature_importance.csv
+!/outputs/project_v2/confusion_matrices.png
+!/outputs/project_v2/roc_curve.png
+!/outputs/project_v2/segment_inference.csv
+!/outputs/project_v2/contract_tenure_segments.csv
 
 # 模型文件和本机数据库
 *.pkl

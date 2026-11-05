@@ -25,8 +25,10 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+from sklearn.model_selection import cross_val_predict
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from scipy.stats import chi2_contingency
 
 from chart_font import configure_chart_font
 
@@ -116,6 +118,93 @@ def analyze_segments(training_frame):
         segments = pd.read_sql_query("SELECT * FROM customer_segments", connection)
     segments["小样本"] = segments["客户数"] < 30
     return overall, segments
+
+
+def analyze_contract_tenure(training_frame):
+    """用 SQLite 汇总合同与在网时长交叉分群。"""
+    segment_sql = (ROOT / "sql" / "segment_analysis.sql").read_text(encoding="utf-8")
+    with sqlite3.connect(":memory:") as connection:
+        training_frame[["Contract", "tenure", "Churn"]].to_sql(
+            "training_customers", connection, index=False, if_exists="replace")
+        connection.executescript(segment_sql)
+        cross_segments = pd.read_sql_query(
+            "SELECT * FROM contract_tenure_segments", connection)
+    return add_wilson_intervals(cross_segments)
+
+
+def wilson_interval(successes, total, z=1.959963984540054):
+    """返回二项比例的 Wilson 95% 区间。"""
+    if total <= 0:
+        return np.nan, np.nan
+    proportion = successes / total
+    denominator = 1 + z**2 / total
+    center = (proportion + z**2 / (2 * total)) / denominator
+    radius = z * np.sqrt(proportion * (1 - proportion) / total + z**2 / (4 * total**2)) / denominator
+    return max(0.0, center - radius), min(1.0, center + radius)
+
+
+def add_wilson_intervals(frame):
+    frame = frame.copy()
+    intervals = [wilson_interval(int(row["流失人数"]), int(row["客户数"]))
+                 for _, row in frame.iterrows()]
+    frame["流失率下限"] = [interval[0] for interval in intervals]
+    frame["流失率上限"] = [interval[1] for interval in intervals]
+    return frame
+
+
+def holm_adjust(p_values):
+    """对有效 p 值执行 Holm 逐步校正，保留输入顺序。"""
+    values = np.asarray(p_values, dtype=float)
+    adjusted = np.full(values.shape, np.nan)
+    valid = np.flatnonzero(np.isfinite(values))
+    if not len(valid):
+        return adjusted
+    order = valid[np.argsort(values[valid])]
+    running_max = 0.0
+    for rank, index in enumerate(order):
+        running_max = max(running_max, (len(order) - rank) * values[index])
+        adjusted[index] = min(1.0, running_max)
+    return adjusted
+
+
+def analyze_segment_associations(training_frame, dimensions):
+    """按训练集分群维度检验与流失标签的关联，并对有效检验做 Holm 校正。"""
+    rows = []
+    for dimension, column in dimensions.items():
+        table = pd.crosstab(training_frame[column], training_frame["Churn"])
+        if table.shape[0] < 2 or table.shape[1] < 2:
+            rows.append({"分群维度": dimension, "卡方统计量": np.nan, "自由度": 0,
+                         "p值": np.nan, "校正后p值": np.nan, "Cramér's V": np.nan,
+                         "检验状态": "类别不足，未检验"})
+            continue
+        statistic, p_value, degrees, expected = chi2_contingency(table, correction=False)
+        if (expected < 5).any():
+            rows.append({"分群维度": dimension, "卡方统计量": np.nan, "自由度": int(degrees),
+                         "p值": np.nan, "校正后p值": np.nan, "Cramér's V": np.nan,
+                         "检验状态": "期望频数小于5，未报告检验"})
+            continue
+        total = table.to_numpy().sum()
+        denominator = min(table.shape[0] - 1, table.shape[1] - 1)
+        cramers_v = np.sqrt(statistic / (total * denominator)) if denominator else np.nan
+        rows.append({"分群维度": dimension, "卡方统计量": float(statistic), "自由度": int(degrees),
+                     "p值": float(p_value), "校正后p值": np.nan,
+                     "Cramér's V": float(cramers_v), "检验状态": "已检验"})
+    adjusted = holm_adjust([row["p值"] for row in rows])
+    for row, value in zip(rows, adjusted):
+        row["校正后p值"] = float(value) if np.isfinite(value) else np.nan
+    return pd.DataFrame(rows)
+
+
+def select_f1_threshold(labels, probabilities):
+    """按 F1 最大选择阈值；并列时先选最接近 0.5，再选较高阈值。"""
+    labels = np.asarray(labels, dtype=int)
+    probabilities = np.asarray(probabilities, dtype=float)
+    candidates = np.unique(np.concatenate(([0.0, 0.5, 1.0], probabilities)))
+    scores = [f1_score(labels, probabilities >= threshold, zero_division=0)
+              for threshold in candidates]
+    best = max(scores)
+    tied = [threshold for threshold, score in zip(candidates, scores) if np.isclose(score, best)]
+    return float(min(tied, key=lambda threshold: (abs(threshold - 0.5), -threshold)))
 
 
 def evaluate_policy(name, labels, ids, scores, budget_count):
@@ -225,6 +314,12 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
     train_frame = frame.iloc[train_idx].copy()
     train_frame["Churn"] = y_train.to_numpy()
     overall, segments = analyze_segments(train_frame)
+    segments = add_wilson_intervals(segments)
+    inference = analyze_segment_associations(train_frame.assign(
+        在网时长分组=train_frame["tenure"].map(_tenure_group),
+        月费分组=train_frame["MonthlyCharges"].map(_monthly_group),
+    ), {"合同类型": "Contract", "在网时长": "在网时长分组", "月费": "月费分组"})
+    cross_segments = analyze_contract_tenure(train_frame)
     test_ids = ids.iloc[test_idx]
 
     models = {
@@ -237,6 +332,12 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
         name: cross_val_score(model, X_train, y_train, scoring="average_precision", cv=cv, n_jobs=1)
         for name, model in models.items()
     }
+    oof_probabilities = {
+        name: cross_val_predict(model, X_train, y_train, cv=cv, method="predict_proba", n_jobs=1)[:, 1]
+        for name, model in models.items()
+    }
+    thresholds = {name: select_f1_threshold(y_train, scores)
+                  for name, scores in oof_probabilities.items()}
     selected_model = max(models, key=lambda name: float(np.mean(cv_scores[name])))
     predictions = pd.DataFrame({"customerID": test_ids.to_numpy(), "actual_churn": y_test.to_numpy()})
     predictions["tenure"] = X_test["tenure"].to_numpy()
@@ -256,6 +357,10 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
             "各折AP": {name: [float(value) for value in scores] for name, scores in cv_scores.items()},
         },
         "模型": {},
+        "阈值评估": {name: {"折外F1阈值": threshold,
+                           "折外F1": float(f1_score(y_train, oof_probabilities[name] >= threshold,
+                                                    zero_division=0))}
+                    for name, threshold in thresholds.items()},
     }
 
     model_scores = {}
@@ -263,6 +368,7 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
         model.fit(X_train, y_train)
         probability = model.predict_proba(X_test)[:, 1]
         predicted = (probability >= 0.5).astype(int)
+        threshold_predicted = (probability >= thresholds[name]).astype(int)
         model_scores[name] = probability
         predictions[f"{name}_probability"] = probability
         predictions[f"{name}_prediction"] = predicted
@@ -273,12 +379,18 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42):
             "F1": float(f1_score(y_test, predicted, zero_division=0)),
             "ROC-AUC": float(roc_auc_score(y_test, probability)),
             "AP（平均精确率）": float(average_precision_score(y_test, probability)),
+            "折外F1阈值": float(thresholds[name]),
+            "阈值测试集查准率": float(precision_score(y_test, threshold_predicted, zero_division=0)),
+            "阈值测试集查全率": float(recall_score(y_test, threshold_predicted, zero_division=0)),
+            "阈值测试集F1": float(f1_score(y_test, threshold_predicted, zero_division=0)),
         }
 
     output = prepare_output(output_dir)
     predictions.to_csv(output / "predictions.csv", index=False, encoding="utf-8-sig")
     overall.to_csv(output / "overall_summary.csv", index=False, encoding="utf-8-sig")
     segments.to_csv(output / "segment_summary.csv", index=False, encoding="utf-8-sig")
+    inference.to_csv(output / "segment_inference.csv", index=False, encoding="utf-8-sig")
+    cross_segments.to_csv(output / "contract_tenure_segments.csv", index=False, encoding="utf-8-sig")
     budget_count = int(len(y_test) * metrics["名额比例"])
     selected_probability = model_scores[selected_model]
     selected_order = np.lexsort((test_ids.to_numpy(dtype=str), -selected_probability))

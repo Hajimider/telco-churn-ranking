@@ -15,7 +15,11 @@ sys.path.insert(0, str(ROOT))
 
 import churn_pipeline as pipeline
 import ai_assistant
-from churn_pipeline import analyze_segments, evaluate_policy, prepare_data, run_pipeline
+from churn_pipeline import (
+    analyze_contract_tenure, analyze_segment_associations, analyze_segments,
+    evaluate_policy, holm_adjust, prepare_data, run_pipeline,
+    select_f1_threshold, wilson_interval,
+)
 
 
 def sample_data(n=120):
@@ -99,11 +103,17 @@ def test_run_pipeline_writes_results(monkeypatch):
         segments = pd.read_csv(output / "segment_summary.csv")
         assert segments["客户数"].sum() >= metrics["训练集样本数"]
         assert (output / "overall_summary.csv").is_file()
+        assert (output / "segment_inference.csv").is_file()
+        assert (output / "contract_tenure_segments.csv").is_file()
         assert (output / "confusion_matrices.png").is_file()
         assert (output / "roc_curve.png").is_file()
         assert (output / "feature_importance.csv").is_file()
         saved = json.loads((output / "metrics.json").read_text(encoding="utf-8"))
         assert saved["测试集样本数"] == 24
+        assert set(saved["阈值评估"]) == {"逻辑回归", "随机森林"}
+        assert all("阈值测试集F1" in result for result in saved["模型"].values())
+        segments = pd.read_csv(output / "segment_summary.csv")
+        assert {"流失率下限", "流失率上限", "流失率排名"}.issubset(segments.columns)
 
 
 def test_sql_segments_match_pandas():
@@ -111,9 +121,74 @@ def test_sql_segments_match_pandas():
     frame["Churn"] = frame["Churn"].map({"No": 0, "Yes": 1})
     _, segments = analyze_segments(frame)
     contract = segments.loc[segments["分群维度"].eq("合同类型")]
+    assert "流失率排名" in segments.columns
     expected = frame.groupby("Contract").Churn.sum()
     actual = contract.set_index("分群")["流失人数"].sort_index()
     pd.testing.assert_series_equal(actual, expected.astype(int).sort_index(), check_names=False)
+
+
+def test_wilson_interval_boundaries_and_single_observation():
+    lower, upper = wilson_interval(0, 10)
+    assert lower == 0 and 0 < upper < 1
+    lower, upper = wilson_interval(10, 10)
+    assert 0 < lower < 1 and upper == pytest.approx(1)
+    assert all(np.isnan(value) for value in wilson_interval(0, 0))
+
+
+def test_holm_adjustment_preserves_order_and_monotonicity():
+    adjusted = holm_adjust([0.03, 0.01, np.nan, 0.04])
+    assert adjusted[1] == pytest.approx(0.03)
+    assert adjusted[0] == pytest.approx(0.06)
+    assert np.isnan(adjusted[2])
+    assert adjusted[3] == pytest.approx(0.06)
+
+
+def test_segment_association_skips_sparse_expected_counts():
+    frame = pd.DataFrame({
+        "Contract": ["A"] * 40 + ["B"] * 40,
+        "Churn": [0] * 20 + [1] * 20 + [0] * 20 + [1] * 20,
+        "rare": ["small"] * 3 + ["large"] * 77,
+    })
+    result = analyze_segment_associations(frame, {"合同": "Contract", "稀疏维度": "rare"})
+    assert result.loc[0, "检验状态"] == "已检验"
+    assert result.loc[1, "检验状态"] == "期望频数小于5，未报告检验"
+    assert result.loc[1, "p值"] != result.loc[1, "p值"]
+
+
+def test_cross_segments_use_sql_and_include_wilson_intervals():
+    frame = sample_data(180)
+    frame["Churn"] = frame["Churn"].map({"No": 0, "Yes": 1})
+    result = analyze_contract_tenure(frame)
+    assert {"合同类型", "在网时长分组", "客户数", "流失率", "流失率下限", "流失率上限"}.issubset(result.columns)
+    assert result["客户数"].sum() == len(frame)
+
+
+def test_f1_threshold_uses_oof_inputs_and_resolves_ties_near_half():
+    labels = np.array([0, 1, 1, 0])
+    probabilities = np.array([0.2, 0.4, 0.6, 0.8])
+    threshold = select_f1_threshold(labels, probabilities)
+    assert threshold in probabilities or threshold in (0.0, 0.5, 1.0)
+    assert threshold == select_f1_threshold(labels.copy(), probabilities.copy())
+
+
+def test_selected_threshold_does_not_depend_on_test_labels(monkeypatch):
+    frame = sample_data(150)
+    split = (np.arange(120), np.arange(120, 150))
+    monkeypatch.setattr(pipeline, "train_test_split", lambda *args, **kwargs: split)
+    with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+        first = Path(directory) / "first"
+        second = Path(directory) / "second"
+        original = run_pipeline(frame.copy(), first)
+        changed = frame.copy()
+        changed.loc[120:, "Churn"] = changed.loc[120:, "Churn"].map({"Yes": "No", "No": "Yes"})
+        modified = run_pipeline(changed, second)
+    for model in original["阈值评估"]:
+        assert original["阈值评估"][model]["折外F1阈值"] == pytest.approx(
+            modified["阈值评估"][model]["折外F1阈值"]
+        )
+        assert original["阈值评估"][model]["折外F1"] == pytest.approx(
+            modified["阈值评估"][model]["折外F1"]
+        )
 
 
 def test_policy_ties_are_stable_and_zero_budget_is_defined():
@@ -178,6 +253,20 @@ def report_project():
         legacy = root / "outputs" / "run_01"
         legacy.mkdir()
         shutil.copyfile(current / "metrics.json", legacy / "metrics.json")
+        legacy_full = root / "outputs" / "legacy_full"
+        shutil.copytree(current, legacy_full)
+        (legacy_full / "segment_inference.csv").unlink()
+        (legacy_full / "contract_tenure_segments.csv").unlink()
+        legacy_metrics = json.loads((legacy_full / "metrics.json").read_text(encoding="utf-8"))
+        legacy_metrics.pop("阈值评估")
+        for model_metrics in legacy_metrics["模型"].values():
+            for key in ("折外F1阈值", "阈值测试集查准率", "阈值测试集查全率", "阈值测试集F1"):
+                model_metrics.pop(key)
+        (legacy_full / "metrics.json").write_text(
+            json.dumps(legacy_metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+        current_metrics = current / "metrics.json"
+        current_stat = current_metrics.stat()
+        os.utime(current_metrics, ns=(current_stat.st_atime_ns, current_stat.st_mtime_ns + 10_000_000_000))
         yield root
 
 
@@ -236,8 +325,11 @@ def test_dashboard_pages_show_only_their_own_content(report_project, monkeypatch
         if page == "客户差异":
             assert app.metric[0].value == f"{int(summary['客户数']):,}"
             assert app.metric[2].value == f"{summary['流失率']:.1%}"
+            assert "分群与历史流失的关联检验" in [item.value for item in app.subheader]
+            assert "合同类型 × 在网时长" in [item.value for item in app.subheader]
         elif page == "模型验证":
             assert app.metric[0].value == metrics["交叉验证"]["选择模型"]
+            assert "训练集折外阈值对照" in [item.value for item in app.subheader]
         elif page == "报告总览":
             assert app.metric[0].value == f"{metrics['样本数']:,}"
             assert app.metric[1].value == f"{metrics['模型'][model]['AP（平均精确率）']:.3f}"
@@ -250,6 +342,21 @@ def test_dashboard_pages_show_only_their_own_content(report_project, monkeypatch
     assert not app.exception and app.title[0].value == "训练集客户分群"
     app.sidebar.radio[0].set_value("报告总览").run(timeout=30)
     assert not app.exception and app.title[0].value == "电信客户流失分析与用户排序"
+
+
+def test_dashboard_legacy_report_explains_missing_analysis(report_project, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    legacy = report_project / "outputs" / "legacy_full"
+    monkeypatch.setattr(sys, "argv", ["dashboard.py", "--output", str(legacy)])
+    app = AppTest.from_file(str(report_project / "dashboard.py")).run(timeout=30)
+    app.sidebar.radio[0].set_value("客户差异").run(timeout=30)
+    assert not app.exception
+    assert any("未包含统计检验结果" in item.value for item in app.info)
+    assert any("未包含合同与在网时长交叉分群" in item.value for item in app.info)
+    app.sidebar.radio[0].set_value("模型验证").run(timeout=30)
+    assert not app.exception
+    assert any("未包含折外阈值评估" in item.value for item in app.info)
 
 
 def test_ai_explanation_survives_navigation_and_stays_with_customer(report_project, monkeypatch):
