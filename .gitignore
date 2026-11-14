@@ -1,3 +1,4 @@
+# Python 缓存、测试产物与虚拟环境
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -28,46 +29,12 @@ Thumbs.db
 /data/*
 !/data/README.md
 
-# 只上传部署用的完整演示报告，其他实验输出留在本机
+# 保留四份完整演示报告；新训练目录默认不提交
 /outputs/*
 !/outputs/project_v1/
-/outputs/project_v1/*
-!/outputs/project_v1/metrics.json
-!/outputs/project_v1/overall_summary.csv
-!/outputs/project_v1/segment_summary.csv
-!/outputs/project_v1/policy_metrics.csv
-!/outputs/project_v1/policy_assignments.csv
-!/outputs/project_v1/predictions.csv
-!/outputs/project_v1/ai_customer_context.csv
-!/outputs/project_v1/feature_importance.csv
-!/outputs/project_v1/confusion_matrices.png
-!/outputs/project_v1/roc_curve.png
-!/outputs/project_v1/segment_inference.csv
-!/outputs/project_v1/contract_tenure_segments.csv
-
-# 上传最新统计分析和阈值评估演示报告
 !/outputs/project_v2/
-/outputs/project_v2/*
-!/outputs/project_v2/metrics.json
-!/outputs/project_v2/overall_summary.csv
-!/outputs/project_v2/segment_summary.csv
-!/outputs/project_v2/policy_metrics.csv
-!/outputs/project_v2/policy_assignments.csv
-!/outputs/project_v2/predictions.csv
-!/outputs/project_v2/ai_customer_context.csv
-!/outputs/project_v2/feature_importance.csv
-!/outputs/project_v2/confusion_matrices.png
-!/outputs/project_v2/roc_curve.png
-!/outputs/project_v2/segment_inference.csv
-!/outputs/project_v2/contract_tenure_segments.csv
-
-# 完整优化流程的可复现演示报告
 !/outputs/run_optimized_v2/
-!/outputs/run_optimized_v2/**
-
-# 新版嵌套评估报告（同次完整输出）
 !/outputs/run_validated/
-!/outputs/run_validated/**
 
 # 模型文件和本机数据库
 *.pkl
