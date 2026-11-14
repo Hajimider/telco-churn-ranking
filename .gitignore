@@ -61,6 +61,14 @@ Thumbs.db
 !/outputs/project_v2/segment_inference.csv
 !/outputs/project_v2/contract_tenure_segments.csv
 
+# 完整优化流程的可复现演示报告
+!/outputs/run_optimized_v2/
+!/outputs/run_optimized_v2/**
+
+# 新版嵌套评估报告（同次完整输出）
+!/outputs/run_validated/
+!/outputs/run_validated/**
+
 # 模型文件和本机数据库
 *.pkl
 *.pickle

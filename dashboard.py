@@ -12,8 +12,8 @@ import pandas as pd
 import streamlit as st
 from sklearn.metrics import auc, confusion_matrix, roc_curve
 
-from ai_assistant import context_from_report, generate_explanation
-from chart_font import configure_chart_font
+from telco_churn.chart_font import configure_chart_font
+from optional_ai.assistant import context_from_report, generate_explanation
 
 
 configure_chart_font()
@@ -242,7 +242,8 @@ def render_cv_chart(cv):
     names = list(cv["AP均值"])
     values = np.array([cv["AP均值"][name] for name in names])
     errors = np.array([cv["AP标准差"][name] for name in names])
-    bars = axis.barh(names, values, xerr=errors, capsize=5, color=["#176b63", "#b86b4b"], height=.48, error_kw={"ecolor": "#9a938a", "elinewidth": 1.2})
+    palette = ["#176b63", "#b86b4b", "#3b6f9c", "#7b8f45"]
+    bars = axis.barh(names, values, xerr=errors, capsize=5, color=palette[:len(names)], height=.48, error_kw={"ecolor": "#9a938a", "elinewidth": 1.2})
     axis.set_xlim(0, max(values + errors) * 1.25)
     axis.set_xlabel("平均精确率 AP", color="#6f7774")
     axis.grid(axis="x", color="#e5ded4", linewidth=.8)
@@ -282,13 +283,19 @@ def render_policy_chart(frame):
 
 
 def render_model_charts(predictions, metrics):
-    figure, axes = plt.subplots(1, 2, figsize=(10, 4.1))
+    model_names = list(metrics["模型"])
+    figure, axes = plt.subplots(1, len(model_names), figsize=(5 * len(model_names), 4.1), squeeze=False)
+    axes = axes[0]
     figure.patch.set_facecolor("#ffffff")
-    model_colors = {"逻辑回归": "#1e3a5f", "随机森林": "#0f766e"}
-    for axis, model in zip(axes, metrics["模型"]):
+    palette = ["#1e3a5f", "#0f766e", "#b86b4b", "#7b8f45"]
+    model_colors = dict(zip(model_names, palette))
+    for axis, model in zip(axes, model_names):
         labels = predictions["actual_churn"].to_numpy(dtype=int)
-        predicted = predictions[f"{model}_prediction"].to_numpy(dtype=int)
-        matrix = confusion_matrix(labels, predicted)
+        if metrics.get("报告版本", 0) >= 3:
+            predicted = (predictions[f"{model}_probability"].to_numpy() >= metrics["模型"][model]["折外F1阈值"]).astype(int)
+        else:
+            predicted = predictions[f"{model}_prediction"].to_numpy(dtype=int)
+        matrix = confusion_matrix(labels, predicted, labels=[0, 1])
         axis.imshow(matrix, cmap="GnBu", vmin=0, vmax=max(matrix.max(), 1))
         axis.set_title(model, color="#172033", fontweight="bold")
         axis.set_xticks([0, 1], ["未流失", "已流失"])
@@ -299,7 +306,7 @@ def render_model_charts(predictions, metrics):
             for column in range(2):
                 axis.text(column, row, str(matrix[row, column]), ha="center", va="center", color="#172033", fontsize=12, fontweight="bold")
         axis.spines[:].set_visible(False)
-    figure.suptitle("测试集混淆矩阵", color="#172033", fontsize=14, fontweight="bold")
+    figure.suptitle("测试集混淆矩阵（训练OOF阈值）" if metrics.get("报告版本", 0) >= 3 else "测试集混淆矩阵（0.5阈值）", color="#172033", fontsize=14, fontweight="bold")
     figure.tight_layout()
     st.pyplot(figure, width="stretch")
     plt.close(figure)
@@ -443,7 +450,7 @@ with st.sidebar:
     st.markdown('<div class="sidebar-nav">分析模块</div>', unsafe_allow_html=True)
     selected_page = st.radio(
         "分析模块",
-        ["报告总览", "客户差异", "模型验证", "触达排序", "AI风险解读"],
+        ["报告总览", "客户差异", "模型验证", "模型解释", "触达排序", "AI风险解读"],
         label_visibility="collapsed",
         key="analysis_navigation",
         width="stretch",
@@ -485,10 +492,13 @@ except (OSError, ValueError, json.JSONDecodeError, pd.errors.ParserError) as exc
 selected_model = metrics["交叉验证"]["选择模型"]
 selected_model_metrics = metrics["模型"][selected_model]
 selected_policy = policy.loc[policy["策略"].eq(selected_model)].iloc[0]
+current_method = metrics.get("报告版本", 0) >= 3
+if not current_method:
+    st.warning("历史报告：使用旧调参/检验流程，不能视为嵌套验证结果。旧生存与测试集最优名额不作为业务结论。")
 
 if selected_page == "报告总览":
     st.markdown('<div class="section-kicker">客户留存分析 · 风险工作台</div>', unsafe_allow_html=True)
-    st.title("电信客户流失分析与用户排序")
+    st.title("电信客户流失预测与排序")
     st.markdown('<p class="hero-subtitle">分析客户流失差异，比较模型在有限联系名额下的排序效果。</p>', unsafe_allow_html=True)
     st.markdown(
         '<div class="status-strip"><span class="status-chip">● 离线评估</span>'
@@ -556,19 +566,21 @@ elif selected_page == "客户差异":
 
 elif selected_page == "模型验证":
     cv = metrics["交叉验证"]
-    page_header("模型验证", "比较逻辑回归与随机森林的交叉验证表现和测试集结果。")
+    page_header("模型验证", "比较候选模型的交叉验证表现和固定测试集结果。")
     with st.container(horizontal=True):
         st.metric("主模型", selected_model, border=True)
-        st.metric("五折 AP 均值", f"{cv['AP均值'][selected_model]:.3f}", border=True)
+        st.metric("外层 AP 均值", f"{cv['AP均值'][selected_model]:.3f}", border=True)
         st.metric("测试集 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
         st.metric("测试集 ROC-AUC", f"{selected_model_metrics['ROC-AUC']:.3f}", border=True)
-    st.caption(f"根据训练集五折 AP 均值选择模型：{cv['选择模型']}。测试集没有参与选择。")
+    st.caption(f"训练集 {cv['折数']} 折 × {cv.get('重复次数', 1)} 次重复；"
+               f"流程：{cv.get('方法', '历史普通CV')}。按外层平均 AP 选择：{cv['选择模型']}。"
+               "测试集没有参与选择；折间标准差不是均值置信区间。")
     cv_frame = pd.DataFrame({
         "模型": list(cv["AP均值"]),
-        "五折 AP 均值": list(cv["AP均值"].values()),
-        "五折 AP 标准差": [cv["AP标准差"][name] for name in cv["AP均值"]],
+        "外层 AP 均值": list(cv["AP均值"].values()),
+        "外层 AP 标准差": [cv["AP标准差"][name] for name in cv["AP均值"]],
     })
-    render_table(cv_frame, decimal_columns=("五折 AP 均值", "五折 AP 标准差"))
+    render_table(cv_frame, decimal_columns=("外层 AP 均值", "外层 AP 标准差"))
     render_cv_chart(cv)
     full_metric_frame = pd.DataFrame(metrics["模型"]).T.reset_index(names="模型")
     metric_frame = full_metric_frame.rename(columns={
@@ -583,6 +595,39 @@ elif selected_page == "模型验证":
     st.subheader("固定测试集指标")
     render_table(metric_frame, decimal_columns=("准确率", "查准率", "查全率", "F1", "ROC-AUC", "平均精确率 AP"))
     st.caption("上表分类指标使用 0.5 阈值；AP 和 ROC-AUC 根据模型分数计算。")
+    ci_rows = []
+    for model_name, values in metrics["模型"].items():
+        intervals = values.get("Bootstrap置信区间", {})
+        for metric_name in ("AP", "Precision", "Recall", "F1"):
+            interval = intervals.get(metric_name)
+            if interval:
+                ci_rows.append({
+                    "模型": model_name, "指标": metric_name,
+                    "均值": interval["mean"], "95%区间下限": interval["ci_lower"],
+                    "95%区间上限": interval["ci_upper"],
+                })
+    if ci_rows:
+        st.subheader("Bootstrap 测试集区间")
+        render_table(pd.DataFrame(ci_rows), decimal_columns=("均值", "95%区间下限", "95%区间上限"))
+    comparison_file = path / "model_comparison_test.csv"
+    if comparison_file.is_file():
+        st.subheader("交叉验证 AP 配对检验")
+        render_table(pd.read_csv(comparison_file), decimal_columns=(
+            "模型1均值", "模型2均值", "均值差异", "t统计量", "p值", "校正后p值",
+            "差值区间下限", "差值区间上限",
+        ))
+        if current_method:
+            st.caption("新版为 Nadeau–Bengio 近似修正 + Holm 多重校正；差值区间为逐比较近似区间，未检出差异不代表等效。")
+        else:
+            st.caption("历史普通配对检验未修正相关折与多重比较，不据此判断显著性。")
+    for filename, title in [("ablation_summary.csv", "LR 特征消融（共用外层划分）"),
+                            ("calibration_cv.csv", "训练集外层校准对照"),
+                            ("calibration_comparison.csv", "固定测试集校准对照")]:
+        if (path / filename).is_file():
+            st.subheader(title)
+            st.dataframe(pd.read_csv(path / filename), hide_index=True)
+    if (path / "calibration_pr.png").is_file():
+        st.image(str(path / "calibration_pr.png"), width="stretch")
     threshold_columns = [
         "模型", "折外F1阈值", "阈值测试集查准率", "阈值测试集查全率", "阈值测试集F1",
     ]
@@ -597,7 +642,7 @@ elif selected_page == "模型验证":
         render_table(threshold_frame, decimal_columns=(
             "训练集折外选择阈值", "测试集查准率", "测试集查全率", "测试集F1",
         ))
-        st.caption("阈值在训练集五折折外预测中按 F1 选择，再固定到测试集评估；它不代表业务成本最优。")
+        st.caption("阈值在训练集折外预测中按 F1 选择，再固定到测试集评估；它不代表业务成本最优。")
     else:
         st.info("此旧版报告未包含折外阈值评估。重新运行项目可生成。")
     render_model_charts(predictions, metrics)
@@ -606,6 +651,48 @@ elif selected_page == "模型验证":
     st.subheader("随机森林关注的特征")
     render_feature_chart(importance)
     st.caption("此图来自随机森林，不能用来解释逻辑回归；重要性也不代表因果关系。")
+
+elif selected_page == "模型解释":
+    page_header("模型解释", "查看逻辑回归的描述性系数和树模型 SHAP；静态快照不作可靠生存推断。")
+    st.caption("新版系数区间固定训练集预处理坐标，仅描述惩罚 LR 的不确定性；数值系数按训练集标准差计，不是因果效应。")
+    coefficient_file = path / "logistic_coefficients.csv"
+    shap_file = path / "shap_summary.png"
+    if coefficient_file.is_file():
+        coefficients = pd.read_csv(coefficient_file).rename(columns={
+            "feature": "特征", "coefficient": "逻辑回归系数",
+            "odds_ratio": "优势比 OR", "ci_lower": "OR 区间下限", "ci_upper": "OR 区间上限",
+        })
+        coefficients["特征"] = coefficients["特征"].map(feature_label)
+        st.subheader("逻辑回归系数与 OR")
+        render_table(coefficients.head(30), decimal_columns=(
+            "逻辑回归系数", "优势比 OR", "OR 区间下限", "OR 区间上限",
+        ))
+    else:
+        st.info("此演示报告尚无逻辑回归系数结果；重新运行当前训练流程后可查看。")
+    if shap_file.is_file():
+        st.subheader("树模型 SHAP 汇总")
+        st.caption(f"解释对象：{metrics.get('SHAP模型', '历史树模型，未注明')}。不一定是主模型，不包含校准映射。")
+        st.image(str(shap_file), caption="SHAP 值描述各特征对模型输出的贡献，不表示因果效应。", width="stretch")
+        examples = sorted((path / "shap_examples").glob("waterfall_top*.png"))
+        if examples:
+            selected_example = st.selectbox("查看高风险客户解释", examples, format_func=lambda item: item.stem)
+            st.image(str(selected_example), width="stretch")
+    else:
+        st.info("此演示报告尚无 SHAP 结果；重新运行当前训练流程后可查看。")
+    survival_file = path / "survival_curves.png"
+    cox_file = path / "cox_results.csv"
+    if survival_file.is_file():
+        st.warning("以下为历史探索产物：缺少事件日期、入组与删失机制，不能据此推断未来留存或合同因果效应。")
+        st.subheader("按合同类型分层的 Kaplan-Meier 曲线")
+        st.image(str(survival_file), width="stretch")
+    if cox_file.is_file():
+        cox = pd.read_csv(cox_file).rename(columns={
+            "covariate": "因素", "Unnamed: 0": "因素", "系数": "Cox 系数", "风险比HR": "风险比 HR",
+            "HR下限": "HR 区间下限", "HR上限": "HR 区间上限",
+        })
+        st.subheader("Cox 比例风险模型")
+        render_table(cox, decimal_columns=("Cox 系数", "风险比 HR", "HR 区间下限", "HR 区间上限", "p值"))
+        st.caption("HR 描述训练集协变量与流失事件风险的条件关联；仍需满足模型假设，不代表因果效应。")
 
 elif selected_page == "触达排序":
     page_header(f"固定 {metrics['名额比例']:.0%} 名额下的策略对照", "联系人数相同时，哪种排序能找到更多历史流失客户？")
@@ -636,6 +723,22 @@ elif selected_page == "触达排序":
     sample["实际流失标签"] = sample["实际流失标签"].map({0: "否", 1: "是"})
     sample = sample.drop(columns="策略")
     render_table(sample, decimal_columns=("排序分数",))
+    if current_method:
+        budget = metrics.get("名额敏感性", {})
+        st.info(f"情景名额仅在训练 OOF 选择：{budget.get('训练OOF选择名额比例', 0):.0%}，"
+                "冻结后才在测试集评估；与上方预设10%名额对照是两项不同评估。")
+        if (path / "business_scenarios.csv").is_file():
+            st.subheader("27 组训练折外业务假设情景")
+            st.dataframe(pd.read_csv(path / "business_scenarios.csv"), hide_index=True)
+    sensitivity_file = path / "budget_sensitivity.csv"
+    curve_file = path / "budget_curve.png"
+    if sensitivity_file.is_file():
+        st.subheader("联系名额敏感性")
+        sensitivity = pd.read_csv(sensitivity_file)
+        render_table(sensitivity, percent_columns=("K比例", "Precision@K", "Recall@K"), decimal_columns=("Lift@K",))
+        st.caption("净收益按示例成本、客户价值、剩余生命周期和挽留成功率假设估算，不是实测业务收益。")
+    if curve_file.is_file():
+        st.image(str(curve_file), width="stretch")
 
 elif selected_page == "AI风险解读":
     page_header("AI 风险解读与触达建议", "查看优先名单中的客户资料，生成联系前需要核实的事项。")
@@ -671,7 +774,9 @@ elif selected_page == "AI风险解读":
         )
         with st.expander("客户资料与分群统计"):
             render_table(ai_display_frame(selected_row))
-        st.caption("发送给 AI 的资料不含真实流失标签。排序分数未经概率校准。")
+        st.caption("发送给 AI 的资料不含真实流失标签。" + (
+            "分数采用训练内 sigmoid 校准，但不代表未来流失或实际干预成功概率。"
+            if current_method else "历史报告排序分数未经概率校准。"))
         explanations = st.session_state.setdefault("ai_explanations", {})
         # 客户资料变化后，不再展示旧资料对应的解读。
         explanation_key = (str(path), json.dumps(selected_row, sort_keys=True, ensure_ascii=False))

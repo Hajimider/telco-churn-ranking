@@ -4,6 +4,7 @@ import shutil
 import sys
 import tempfile
 from io import BytesIO
+from itertools import product
 from pathlib import Path
 
 import numpy as np
@@ -13,13 +14,23 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import churn_pipeline as pipeline
-import ai_assistant
-from churn_pipeline import (
+from telco_churn import pipeline, validation
+from optional_ai import assistant as ai_assistant
+from telco_churn.pipeline import (
     analyze_contract_tenure, analyze_segment_associations, analyze_segments,
-    evaluate_policy, holm_adjust, prepare_data, run_pipeline,
+    evaluate_policy, holm_adjust, prepare_data, run_pipeline as _run_pipeline,
     select_f1_threshold, wilson_interval,
 )
+
+
+def run_pipeline(*args, **kwargs):
+    """保留真实五折嵌套训练与报告，仅压缩测试运行预算。"""
+    options = {
+        "outer_splits": 5, "repeats": 1, "inner_splits": 2, "trials": 1,
+        "n_bootstrap": 20, "backend": "sqlite",
+    }
+    options.update(kwargs)
+    return _run_pipeline(*args, **options)
 
 
 def sample_data(n=120):
@@ -49,6 +60,36 @@ def sample_data(n=120):
     })
 
 
+def use_fast_models(monkeypatch):
+    from lightgbm import LGBMClassifier
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.linear_model import LogisticRegression
+
+    def tune(name, X, y, numeric_columns, seed, trials, inner_splits):
+        # 真实预处理、内层 sigmoid 校准及外层验证照常运行；只跳过调参搜索。
+        if name == "LightGBM":
+            estimator = LGBMClassifier(
+                n_estimators=8, max_depth=3, learning_rate=0.1, num_leaves=8,
+                min_child_samples=2, random_state=seed, n_jobs=1, verbosity=-1,
+            )
+        elif name == "随机森林":
+            estimator = RandomForestClassifier(
+                n_estimators=8, max_depth=3, min_samples_leaf=2,
+                random_state=seed, n_jobs=1,
+            )
+        else:
+            assert name == "逻辑回归"
+            estimator = LogisticRegression(max_iter=2000, random_state=seed)
+        return pipeline.make_pipeline(estimator, numeric_columns)
+
+    monkeypatch.setattr(validation, "tune_model", tune)
+
+
+@pytest.fixture(autouse=True)
+def fast_models_for_pipeline_tests(monkeypatch):
+    use_fast_models(monkeypatch)
+
+
 def test_prepare_data_converts_blank_total_charges():
     frame = sample_data()
     frame["TotalCharges"] = frame["TotalCharges"].astype(object)
@@ -73,29 +114,37 @@ def test_bad_input(change):
 
 
 def test_run_pipeline_writes_results(monkeypatch):
+    use_fast_models(monkeypatch)
     with tempfile.TemporaryDirectory(dir=ROOT) as directory:
         output = Path(directory) / "outputs"
-        captured = {}
-        original_analyze = pipeline.analyze_segments
+        captured = []
+        original_analyze = pipeline.analyze_training_segments
 
-        def capture_training_segments(training_frame):
-            captured["ids"] = set(training_frame.customerID)
-            return original_analyze(training_frame)
+        def capture_training_segments(training_frame, backend="sqlite"):
+            captured.append((set(training_frame.customerID), backend))
+            return original_analyze(training_frame, backend=backend)
 
-        monkeypatch.setattr(pipeline, "analyze_segments", capture_training_segments)
+        monkeypatch.setattr(pipeline, "analyze_training_segments", capture_training_segments)
         metrics = run_pipeline(sample_data(), output)
-        assert set(metrics["模型"]) == {"逻辑回归", "随机森林"}
+        assert set(metrics["模型"]) == {"逻辑回归", "随机森林", "LightGBM"}
         assert metrics["交叉验证"]["折数"] == 5
+        assert metrics["交叉验证"]["重复次数"] == 1
+        assert metrics["交叉验证"]["内层折数"] == 2
+        assert metrics["交叉验证"]["Optuna轮数"] == 1
+        assert all(len(scores) == 5 for scores in metrics["交叉验证"]["各折AP"].values())
         assert metrics["交叉验证"]["选择模型"] in metrics["模型"]
         assert (output / "metrics.json").is_file()
         predictions = pd.read_csv(output / "predictions.csv", dtype={"customerID": "string"})
         assert len(predictions) == 24
         assert predictions.customerID.isin(sample_data().customerID).all()
-        assert len(captured["ids"]) == metrics["训练集样本数"]
-        assert captured["ids"].isdisjoint(set(predictions.customerID))
+        assert len(captured) == 1
+        training_ids, backend = captured[0]
+        assert backend == "sqlite"
+        assert len(training_ids) == metrics["训练集样本数"]
+        assert training_ids.isdisjoint(set(predictions.customerID))
         assignments = pd.read_csv(output / "policy_assignments.csv", dtype={"customerID": "string"})
         assert assignments.groupby("策略").size().le(int(len(predictions) * 0.1)).all()
-        assert len(pd.read_csv(output / "policy_metrics.csv")) == 4
+        assert len(pd.read_csv(output / "policy_metrics.csv")) == 5
         ai_context = pd.read_csv(output / "ai_customer_context.csv")
         assert len(ai_context) == int(len(predictions) * 0.1)
         assert "actual_churn" not in ai_context.columns
@@ -105,12 +154,62 @@ def test_run_pipeline_writes_results(monkeypatch):
         assert (output / "overall_summary.csv").is_file()
         assert (output / "segment_inference.csv").is_file()
         assert (output / "contract_tenure_segments.csv").is_file()
+        assert (output / "model_comparison_test.csv").is_file()
+        assert (output / "logistic_coefficients.csv").is_file()
+        assert (output / "shap_summary.png").is_file()
+        assert metrics["生存分析"]["状态"] == "默认禁用"
+        assert not (output / "survival_curves.png").exists()
+        assert not (output / "cox_results.csv").exists()
+        folds = pd.read_csv(output / "nested_cv_folds.csv")
+        assert len(folds) == 5 * 3
+        assert folds.groupby("模型")["外层折"].nunique().eq(5).all()
+        assert {"原始AP", "AP", "原始Brier", "校准Brier"}.issubset(folds.columns)
+        assert np.isfinite(folds[["原始AP", "AP", "原始Brier", "校准Brier"]]).all().all()
+        ablation = pd.read_csv(output / "ablation_folds.csv")
+        assert len(ablation) == 5 * len(pipeline.FEATURE_GROUPS)
+        assert set(ablation["特征组"]) == set(pipeline.FEATURE_GROUPS)
+        assert ablation.groupby("特征组")["外层折"].nunique().eq(5).all()
+        full_features = ablation.loc[ablation["特征组"].eq("全部衍生")].sort_values("外层折")
+        logistic_folds = folds.loc[folds["模型"].eq("逻辑回归")].sort_values("外层折")
+        np.testing.assert_allclose(full_features["AP"], logistic_folds["AP"])
+        ablation_summary = pd.read_csv(output / "ablation_summary.csv")
+        assert set(ablation_summary["特征组"]) == set(pipeline.FEATURE_GROUPS)
+        calibration = pd.read_csv(output / "calibration_comparison.csv")
+        assert set(zip(calibration["模型"], calibration["状态"])) == set(
+            product(metrics["模型"], ["原始", "sigmoid"]))
+        assert np.isfinite(calibration[["AP", "Brier"]]).all().all()
+        for row in calibration.loc[calibration["状态"].eq("sigmoid")].to_dict("records"):
+            assert row["AP"] == pytest.approx(metrics["模型"][row["模型"]]["AP（平均精确率）"])
+            assert row["Brier"] == pytest.approx(metrics["模型"][row["模型"]]["Brier"])
+        calibration_cv = pd.read_csv(output / "calibration_cv.csv").set_index("模型")
+        pd.testing.assert_frame_equal(
+            calibration_cv.sort_index(),
+            folds.groupby("模型")[["原始Brier", "校准Brier", "原始AP", "AP"]].mean().sort_index(),
+        )
+        for name in ("calibration_pr.png", "calibration_bins.csv", "pr_curve.csv"):
+            assert (output / name).is_file()
+        training_oof = pd.read_csv(output / "training_oof.csv", dtype={"customerID": "string"})
+        assert set(training_oof.customerID) == training_ids
+        assert not training_oof.customerID.duplicated().any()
+        scenarios = pd.read_csv(output / "business_scenarios.csv")
+        assert len(scenarios) == 27
+        assert set(scenarios[["触达成本", "假设成功率", "假设剩余月数"]].itertuples(
+            index=False, name=None)) == set(product([20, 50, 100], [0.1, 0.2, 0.3], [6, 12, 24]))
+        assert scenarios["训练OOF选择K"].between(0, 1).all()
+        assert np.isfinite(scenarios["训练OOF情景净收益"]).all()
+        training_budget = pd.read_csv(output / "budget_training_oof.csv")
+        selected_k = training_budget.sort_values(
+            ["期望净收益", "K比例"], ascending=[False, True]).iloc[0]["K比例"]
+        assert metrics["名额敏感性"]["训练OOF选择名额比例"] == pytest.approx(selected_k)
+        assert (output / "budget_sensitivity.csv").is_file()
+        assert (output / "budget_curve.png").is_file()
         assert (output / "confusion_matrices.png").is_file()
         assert (output / "roc_curve.png").is_file()
         assert (output / "feature_importance.csv").is_file()
         saved = json.loads((output / "metrics.json").read_text(encoding="utf-8"))
         assert saved["测试集样本数"] == 24
-        assert set(saved["阈值评估"]) == {"逻辑回归", "随机森林"}
+        assert set(saved["阈值评估"]) == {"逻辑回归", "随机森林", "LightGBM"}
+        assert "名额敏感性" in saved
         assert all("阈值测试集F1" in result for result in saved["模型"].values())
         segments = pd.read_csv(output / "segment_summary.csv")
         assert {"流失率下限", "流失率上限", "流失率排名"}.issubset(segments.columns)
@@ -172,6 +271,7 @@ def test_f1_threshold_uses_oof_inputs_and_resolves_ties_near_half():
 
 
 def test_selected_threshold_does_not_depend_on_test_labels(monkeypatch):
+    use_fast_models(monkeypatch)
     frame = sample_data(150)
     split = (np.arange(120), np.arange(120, 150))
     monkeypatch.setattr(pipeline, "train_test_split", lambda *args, **kwargs: split)
@@ -182,6 +282,11 @@ def test_selected_threshold_does_not_depend_on_test_labels(monkeypatch):
         changed = frame.copy()
         changed.loc[120:, "Churn"] = changed.loc[120:, "Churn"].map({"Yes": "No", "No": "Yes"})
         modified = run_pipeline(changed, second)
+    assert original["交叉验证"]["选择模型"] == modified["交叉验证"]["选择模型"]
+    assert original["交叉验证"]["各折AP"] == modified["交叉验证"]["各折AP"]
+    assert original["名额敏感性"]["训练OOF选择名额比例"] == pytest.approx(
+        modified["名额敏感性"]["训练OOF选择名额比例"]
+    )
     for model in original["阈值评估"]:
         assert original["阈值评估"][model]["折外F1阈值"] == pytest.approx(
             modified["阈值评估"][model]["折外F1阈值"]
@@ -212,13 +317,19 @@ def test_dashboard_renders_chinese_headers(monkeypatch):
         monkeypatch.setattr(sys, "argv", ["dashboard.py", "--output", str(output)])
         app = AppTest.from_file(str(ROOT / "dashboard.py")).run(timeout=30)
         assert not app.exception and not app.error
-        assert app.title[0].value == "电信客户流失分析与用户排序"
+        assert app.title[0].value == "电信客户流失预测与排序"
         assert app.sidebar.radio[0].value == "报告总览"
         assert not app.main.radio
-        assert app.sidebar.radio[0].options == ["报告总览", "客户差异", "模型验证", "触达排序", "AI风险解读"]
+        assert app.sidebar.radio[0].options == ["报告总览", "客户差异", "模型验证", "模型解释", "触达排序", "AI风险解读"]
         labels = [metric.label for metric in app.metric]
         assert labels == ["客户总量", "测试集 AP", "优先名单命中率", "相对随机提升倍数"]
         assert app.expander[0].label == "数据来源与评估口径"
+        app.sidebar.radio[0].set_value("模型验证").run(timeout=30)
+        assert not app.exception and not app.error
+        app.sidebar.radio[0].set_value("模型解释").run(timeout=30)
+        assert not app.exception and not app.error
+        app.sidebar.radio[0].set_value("触达排序").run(timeout=30)
+        assert not app.exception and not app.error
 
 
 def test_dashboard_ai_button_renders_offline_explanation(monkeypatch):
@@ -245,6 +356,8 @@ def test_dashboard_ai_button_renders_offline_explanation(monkeypatch):
 @pytest.fixture(scope="module")
 def report_project():
     """独立的小型项目副本，覆盖旧报告与当前报告共存的启动情形。"""
+    patch = pytest.MonkeyPatch()
+    use_fast_models(patch)
     with tempfile.TemporaryDirectory(dir=ROOT) as directory:
         root = Path(directory)
         shutil.copyfile(ROOT / "dashboard.py", root / "dashboard.py")
@@ -258,6 +371,7 @@ def report_project():
         (legacy_full / "segment_inference.csv").unlink()
         (legacy_full / "contract_tenure_segments.csv").unlink()
         legacy_metrics = json.loads((legacy_full / "metrics.json").read_text(encoding="utf-8"))
+        legacy_metrics.pop("报告版本")
         legacy_metrics.pop("阈值评估")
         for model_metrics in legacy_metrics["模型"].values():
             for key in ("折外F1阈值", "阈值测试集查准率", "阈值测试集查全率", "阈值测试集F1"):
@@ -268,6 +382,7 @@ def report_project():
         current_stat = current_metrics.stat()
         os.utime(current_metrics, ns=(current_stat.st_atime_ns, current_stat.st_mtime_ns + 10_000_000_000))
         yield root
+    patch.undo()
 
 
 @pytest.mark.parametrize("arguments", [[], ["--output", "outputs/run_01"], ["--output=outputs/current"]])
@@ -280,7 +395,7 @@ def test_dashboard_selects_complete_report(report_project, monkeypatch, argument
     assert not app.exception and not app.error
     report_selector = next(item for item in app.selectbox if item.label == "分析报告")
     assert Path(report_selector.value) == report_project / "outputs" / "current"
-    assert app.radio[0].options == ["报告总览", "客户差异", "模型验证", "触达排序", "AI风险解读"]
+    assert app.radio[0].options == ["报告总览", "客户差异", "模型验证", "模型解释", "触达排序", "AI风险解读"]
     if "outputs/run_01" in arguments:
         assert any("不包含完整" in item.value for item in app.info)
     assert "实习" not in app.caption[0].value
@@ -300,9 +415,10 @@ def test_dashboard_pages_show_only_their_own_content(report_project, monkeypatch
     app = AppTest.from_file(str(report_project / "dashboard.py")).run(timeout=30)
     assert app.sidebar.radio[0].value == "报告总览"
     pages = [
-        ("报告总览", "电信客户流失分析与用户排序", ["客户总量", "测试集 AP", "优先名单命中率", "相对随机提升倍数"], None),
+        ("报告总览", "电信客户流失预测与排序", ["客户总量", "测试集 AP", "优先名单命中率", "相对随机提升倍数"], None),
         ("客户差异", "训练集客户分群", ["训练集客户数", "训练集流失人数", "训练集流失率"], "选择分群维度"),
-        ("模型验证", "模型验证", ["主模型", "五折 AP 均值", "测试集 AP", "测试集 ROC-AUC"], None),
+        ("模型验证", "模型验证", ["主模型", "外层 AP 均值", "测试集 AP", "测试集 ROC-AUC"], None),
+        ("模型解释", "模型解释", [], "查看高风险客户解释"),
         ("触达排序", "固定 10% 名额下的策略对照", ["优先触达名额", "命中历史流失人数", "优先名单命中率", "相对随机提升倍数"], "查看策略的测试集示例"),
         ("AI风险解读", "AI 风险解读与触达建议", [], "选择主模型固定容量优先客户"),
     ]
@@ -341,7 +457,7 @@ def test_dashboard_pages_show_only_their_own_content(report_project, monkeypatch
     app.sidebar.radio[0].set_value("客户差异").run(timeout=30)
     assert not app.exception and app.title[0].value == "训练集客户分群"
     app.sidebar.radio[0].set_value("报告总览").run(timeout=30)
-    assert not app.exception and app.title[0].value == "电信客户流失分析与用户排序"
+    assert not app.exception and app.title[0].value == "电信客户流失预测与排序"
 
 
 def test_dashboard_legacy_report_explains_missing_analysis(report_project, monkeypatch):
@@ -356,6 +472,7 @@ def test_dashboard_legacy_report_explains_missing_analysis(report_project, monke
     assert any("未包含合同与在网时长交叉分群" in item.value for item in app.info)
     app.sidebar.radio[0].set_value("模型验证").run(timeout=30)
     assert not app.exception
+    assert "外层 AP 均值" in [item.label for item in app.metric]
     assert any("未包含折外阈值评估" in item.value for item in app.info)
 
 
@@ -624,7 +741,7 @@ def test_chinese_chart_font_without_system_fonts(monkeypatch):
     import warnings
     import matplotlib.pyplot as plt
     from matplotlib import font_manager
-    from chart_font import configure_chart_font
+    from telco_churn.chart_font import configure_chart_font
 
     monkeypatch.setattr(font_manager.fontManager, "ttflist", [])
     font_manager.fontManager._findfont_cached.cache_clear()
