@@ -42,16 +42,16 @@ def render_diagnostics(calibration, pr, comparison, prevalence, output):
     colors = {"逻辑回归": "#006b40", "随机森林": "#bf754e", "LightGBM": "#2465ad"}
     styles = {"逻辑回归": "-", "随机森林": "--", "LightGBM": "-."}
     names = [name for name in colors if name in set(comparison["模型"])]
-    with plt.rc_context({"font.size": 10, "text.color": ink, "axes.labelcolor": muted,
+    with plt.rc_context({"font.size": 12, "text.color": ink, "axes.labelcolor": muted,
                          "xtick.color": muted, "ytick.color": muted,
                          "savefig.facecolor": canvas}):
         fig = plt.figure(figsize=(14, 9.2), facecolor=canvas)
         grid = fig.add_gridspec(2, 6, left=.065, right=.97, top=.805, bottom=.105,
                                wspace=.9, hspace=.6, height_ratios=[1, 1.12])
-        fig.text(.065, .957, "模型验证 / 概率质量与排序能力", fontsize=20, weight="bold", color=ink)
-        fig.text(.065, .914, "固定测试集 · 校准对照 + Precision–Recall · 同一份报告数据", fontsize=11, color=muted)
-        fig.text(.065, .867, "01  校准曲线", fontsize=12, weight="bold")
-        fig.text(.27, .867, "越接近对角线越好；虚线为原始分数，实线为 sigmoid 校准", fontsize=10, color=muted)
+        fig.text(.065, .957, "模型验证 / 概率质量与排序能力", fontsize=24, weight="bold", color=ink)
+        fig.text(.065, .914, "固定测试集 · 校准对照 + Precision–Recall · 同一份报告数据", fontsize=14, color=muted)
+        fig.text(.065, .867, "01  校准曲线", fontsize=15, weight="bold")
+        fig.text(.27, .867, "越接近对角线越好；虚线为原始分数，实线为 sigmoid 校准", fontsize=12, color=muted)
 
         def setup(ax):
             ax.set_facecolor(surface)
@@ -60,7 +60,7 @@ def render_diagnostics(calibration, pr, comparison, prevalence, output):
             ax.spines[["top", "right"]].set_visible(False)
             for side in ("left", "bottom"):
                 ax.spines[side].set_color(border)
-            ax.tick_params(length=0, pad=7, labelsize=9)
+            ax.tick_params(length=0, pad=7, labelsize=11)
             ax.set(xlim=(0, 1), ylim=(0, 1.03))
             ax.set_xticks([0, .25, .5, .75, 1])
             ax.set_yticks([0, .25, .5, .75, 1])
@@ -80,15 +80,15 @@ def render_diagnostics(calibration, pr, comparison, prevalence, output):
                         markerfacecolor=surface if state == "原始" else colors[name],
                         markeredgewidth=1, alpha=.65 if state == "原始" else 1,
                         label="原始" if state == "原始" else "sigmoid 校准")
-            ax.set_title(name, loc="left", fontsize=12, weight="bold", color=ink, pad=12)
+            ax.set_title(name, loc="left", fontsize=15, weight="bold", color=ink, pad=12)
             ax.set_xlabel("平均预测分数", labelpad=8)
             if index == 0:
                 ax.set_ylabel("实际流失比例", labelpad=8)
-            ax.legend(loc="upper left", frameon=False, fontsize=8.5)
+            ax.legend(loc="upper left", frameon=False, fontsize=10.5)
 
         ax = fig.add_subplot(grid[1, :4])
         setup(ax)
-        ax.set_title("02  PR 曲线 / 排序表现", loc="left", fontsize=12, weight="bold", color=ink, pad=15)
+        ax.set_title("02  PR 曲线 / 排序表现", loc="left", fontsize=15, weight="bold", color=ink, pad=15)
         for name in names:
             rows = pr.loc[pr["模型"].eq(name)]
             ap = comparison.loc[comparison["模型"].eq(name) & comparison["状态"].eq("sigmoid"), "AP"].iloc[0]
@@ -96,10 +96,10 @@ def render_diagnostics(calibration, pr, comparison, prevalence, output):
                     linestyle=styles[name], linewidth=1.8, label=f"{name}  AP {ap:.3f}")
         ax.axhline(prevalence, color="#899087", linewidth=1.1, linestyle=":")
         ax.annotate(f"随机基线 {prevalence:.1%}", (.99, prevalence), xytext=(-4, 7),
-                    textcoords="offset points", ha="right", color=muted, fontsize=9,
+                    textcoords="offset points", ha="right", color=muted, fontsize=11,
                     bbox={"facecolor": surface, "edgecolor": "none", "pad": 2})
         ax.set(xlabel="查全率 Recall", ylabel="查准率 Precision")
-        ax.legend(loc="upper right", frameon=False, fontsize=9)
+        ax.legend(loc="upper right", frameon=False, fontsize=11)
 
         table_ax = fig.add_subplot(grid[1, 4:])
         table_ax.set_facecolor(surface)
@@ -107,19 +107,19 @@ def render_diagnostics(calibration, pr, comparison, prevalence, output):
         table_ax.set_yticks([])
         for spine in table_ax.spines.values():
             spine.set_color(border)
-        table_ax.text(.07, .91, "03  Brier 分数", fontsize=12, weight="bold", transform=table_ax.transAxes)
-        table_ax.text(.07, .81, "越低越好 · 校准不一定改善结果", fontsize=9, color=muted, transform=table_ax.transAxes)
+        table_ax.text(.07, .91, "03  Brier 分数", fontsize=15, weight="bold", transform=table_ax.transAxes)
+        table_ax.text(.07, .81, "越低越好 · 校准不一定改善结果", fontsize=11, color=muted, transform=table_ax.transAxes)
         for x, label in [(.07, "模型"), (.51, "原始"), (.75, "校准后")]:
-            table_ax.text(x, .66, label, fontsize=9, color=muted, transform=table_ax.transAxes)
+            table_ax.text(x, .66, label, fontsize=11, color=muted, transform=table_ax.transAxes)
         for index, name in enumerate(names):
             y = .52 - index * .16
             rows = comparison.loc[comparison["模型"].eq(name)].set_index("状态")
-            table_ax.text(.07, y, name, fontsize=10, transform=table_ax.transAxes)
-            table_ax.text(.51, y, f"{rows.loc['原始', 'Brier']:.4f}", fontsize=10, transform=table_ax.transAxes)
-            table_ax.text(.75, y, f"{rows.loc['sigmoid', 'Brier']:.4f}", fontsize=10, transform=table_ax.transAxes)
+            table_ax.text(.07, y, name, fontsize=12, transform=table_ax.transAxes)
+            table_ax.text(.51, y, f"{rows.loc['原始', 'Brier']:.4f}", fontsize=12, transform=table_ax.transAxes)
+            table_ax.text(.75, y, f"{rows.loc['sigmoid', 'Brier']:.4f}", fontsize=12, transform=table_ax.transAxes)
             table_ax.plot([.07, .93], [y - .055, y - .055], color=border, linewidth=.6, transform=table_ax.transAxes)
         fig.text(.065, .039, "读图提示：AP 衡量排序，Brier 衡量概率误差；两者不能相互替代。仅评估历史标签，不表示因果或实际挽留收益。",
-                 fontsize=9, color=muted)
+                 fontsize=11, color=muted)
         fig.savefig(output / "calibration_pr.png", dpi=180, facecolor=canvas)
         plt.close(fig)
 
