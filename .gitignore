@@ -32,7 +32,7 @@ Thumbs.db
 
 # 保留已有报告与本轮受控验证报告；新训练目录默认不提交
 /outputs/*
-/outputs/run_final/
+!/outputs/run_final/
 
 # Codex 过程记录只保存在本地，不作为项目交付文件
 /task_plan.md
