@@ -91,7 +91,7 @@ python run_project.py --backend mysql --output outputs/run_mysql_new
 python -m streamlit run dashboard.py
 ```
 
-看板按最新完整报告自动选取；可手动切换。当前修复验证使用 `outputs/final_fix_smoke`；旧报告继续兼容，但有明确警示，旧截图不代表当前实测结果。
+看板按最新完整报告自动选取；可手动切换。当前权威报告为 `outputs/run_final`。
 
 AI 属于可选展示层，不参与训练或排序。未配置时用本地模板；配置 `CHURN_AI_BASE_URL/MODEL/API_KEY/TIMEOUT_SECONDS` 后，点击按钮才发送允许字段。不要在演示真实客户时向第三方发送个人资料，真实标签不发送。AI 输出需要人工核对，不能用于证明模型效果。
 

@@ -802,7 +802,7 @@ def test_chinese_chart_font_without_system_fonts(monkeypatch):
 
 
 def test_deployment_demo_includes_matching_ai_context():
-    report = ROOT / "outputs" / "project_v1"
+    report = ROOT / "outputs" / "run_final"
     metrics = json.loads((report / "metrics.json").read_text(encoding="utf-8"))
     model = metrics["交叉验证"]["选择模型"]
     context = pd.read_csv(report / "ai_customer_context.csv", dtype={"customerID": "string"})

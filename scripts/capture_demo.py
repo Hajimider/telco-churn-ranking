@@ -23,11 +23,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser", help="Optional path to an already installed Chromium executable")
     parser.add_argument("--report", default="run_final", help="Report directory name selected in the dashboard")
+    parser.add_argument("--url", default="http://127.0.0.1:8501", help="Dashboard URL")
     args = parser.parse_args()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(executable_path=args.browser)
         page = browser.new_page(viewport={"width": 1440, "height": 1100}, device_scale_factor=1)
-        page.goto("http://127.0.0.1:8501", wait_until="domcontentloaded")
+        page.goto(args.url, wait_until="domcontentloaded")
         page.get_by_role("heading", name="电信客户流失预测与排序", exact=True).wait_for(timeout=60000)
         report = page.get_by_role("combobox", name="分析报告")
         report.click()

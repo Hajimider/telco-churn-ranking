@@ -21,16 +21,16 @@
 
 代码覆盖 SQL 分群检验、嵌套交叉验证、特征消融、概率校准对照和 Streamlit 看板。每个外层训练折只搜索一次基模型参数，再用固定模型交叉拟合 sigmoid 校准；阈值和预算情景只由训练集折外预测确定。
 
-![新版报告总览：LightGBM、历史留出AP与优先名单](docs/demo-v3-overview.png)
+![完整预算报告总览：LightGBM、历史留出AP与优先名单](docs/demo-v3-overview.png)
 
 ## 结果速览
 
-当前工作区的受控验证报告位于 [`outputs/final_fix_smoke`](outputs/final_fix_smoke/metrics.json)（随机种子 `42`，3 折 × 1 次重复、内层 2 折、1 次 Optuna trial、20 次 Bootstrap）。它用于验证修复后的代码通路，不替代完整预算实验。
+当前唯一权威报告位于 [`outputs/run_final`](outputs/run_final/metrics.json)（随机种子 `42`，5 折 × 3 次重复、内层 3 折、每折 30 次 Optuna trial、1000 次 Bootstrap）。
 
-- 该次运行的外层 AP 均值为：逻辑回归 `0.6630 ± 0.0068`、随机森林 `0.6562 ± 0.0217`、LightGBM `0.6463 ± 0.0124`，因此该次运行选择逻辑回归。小预算结果不用于代表完整实验性能。
-- 历史留出集按前 10% 名额（140 人）排序时，LightGBM 命中 111 名历史流失客户，Precision@140 为 `79.29%`，Lift 为 `2.99`。命中数是离线排序结果，不代表实际挽留成功。
+- 完整运行的外层 AP 均值为：逻辑回归 `0.6640 ± 0.0198`、随机森林 `0.6587 ± 0.0221`、LightGBM `0.6645 ± 0.0204`，因此按外层均值选择 LightGBM。
+- 历史留出集按前 10% 名额（140 人）排序时，LightGBM 命中 106 名历史流失客户，Precision@140 为 `75.71%`，Lift 为 `2.85`。命中数是离线排序结果，不代表实际挽留成功。
 - 校准是否用于最终推理由每个模型的外层 Brier 对照决定；该次运行逻辑回归使用原始模型，随机森林和 LightGBM 使用 sigmoid 校准模型。校准不保证在每次留出集上改善。
-- 风险排序与期望价值排序分别生成预算曲线；该次运行两者都选择 `45%` 名额，冻结情景净收益分别为 `52,043.74` 元和 `54,153.88` 元，仅表示这次受控运行的假设结果。
+- 风险排序与期望价值排序分别生成预算曲线；完整运行的价值排序选择 `45%` 名额，冻结情景净收益为 `53,399.68` 元，仅表示当前假设结果。
 
 > [!NOTE]
 > 这里的“命中”指历史留出样本的标签为流失。该留出集曾用于开发复核，并非独立盲测；区间条件于已拟合模型，不包含训练和选模不确定性。
@@ -41,7 +41,7 @@
 
 ```bash
 python -m pip install -r requirements.txt
-python -m streamlit run dashboard.py -- --output outputs/final_fix_smoke
+python -m streamlit run dashboard.py -- --output outputs/run_final
 ```
 
 <details>
@@ -97,7 +97,7 @@ python -m pytest -q
   </tr>
   <tr>
     <td width="100%" valign="top">
-      <img src="docs/demo-v3-policy.png" alt="触达排序：140人名额、109人命中和策略对照" width="100%" style="height: auto;" />
+      <img src="docs/demo-v3-policy.png" alt="触达排序：140人名额、106人命中和策略对照" width="100%" style="height: auto;" />
       <p align="center"><b>触达排序</b><br>对比 10% 固定容量下的各策略命中人数与 Lift，另单独列出训练 OOF 选出的冻结名额和 27 组成本收益假设。</p>
     </td>
   </tr>
@@ -136,7 +136,7 @@ python -m pytest -q
 
 | 模型 | 外层 AP（均值 ± 折间 SD） | 留出集 AP | 留出集 ROC-AUC | 训练 OOF 阈值 | 留出集 F1 |
 |:---|---:|---:|---:|---:|---:|
-| LightGBM | 0.6652 ± 0.0192 | 0.6695 | 0.8482 | 0.2677 | 0.6375 |
+| LightGBM | 0.6645 ± 0.0204 | 0.6589 | 0.8459 | 0.2677 | 0.6375 |
 | 逻辑回归 | 0.6636 ± 0.0188 | 0.6498 | 0.8453 | 0.2796 | 0.6075 |
 | 随机森林 | 0.6601 ± 0.0211 | 0.6578 | 0.8464 | 0.3262 | 0.6239 |
 
@@ -148,21 +148,21 @@ python -m pytest -q
 
 | 排序方式 | 命中历史流失人数 | Precision@140 | Recall@140 | Lift@140 |
 |:---|---:|---:|---:|---:|
-| LightGBM | 109 | 77.86% | 29.14% | 2.93 |
+| LightGBM | 106 | 75.71% | 28.07% | 2.85 |
 | 随机森林 | 107 | 76.43% | 28.61% | 2.88 |
 | 逻辑回归 | 105 | 75.00% | 28.07% | 2.83 |
 | 短在网时长规则 | 87 | 62.14% | 23.26% | 2.34 |
 | 随机选择期望 | 37.16 | 26.54% | 9.94% | 1.00 |
 
-LightGBM 的 Precision@140 为 `77.86%`，95% Bootstrap 区间为 `70.00%–85.00%`。区间按客户重采样并保持固定名额；它条件于已拟合模型，不包含训练、调参或模型选择带来的不确定性。
+LightGBM 的 Precision@140 为 `75.71%`。区间按客户重采样并保持固定名额；它条件于已拟合模型，不包含训练、调参或模型选择带来的不确定性。
 
 如果给外呼加上成本收益假设（基准设为触达成本 50 元/人、挽留成功多留存 12 个月、成功率 30%，用客户自己的 `MonthlyCharges` 近似月收入），代码会分别按风险分数和 `概率 × 月费` 价值代理选择名额，并在 `business_scenarios.csv` 中保留两套结果。月费不等于毛利或真实 CLV，这组数字只作敏感性参考。
 
 ### 特征消融与概率校准
 
-![与看板统一风格的校准小图、PR曲线和Brier对照](outputs/final_fix_smoke/calibration_pr.png)
+![与看板统一风格的校准小图、PR曲线和Brier对照](outputs/run_final/calibration_pr.png)
 
-固定逻辑回归家族、共享同一组外层折做四组对比；`ablation_summary.csv` 同时记录相对原始特征的配对差值区间和 Holm 校正 p 值（逐折明细见 [`ablation_folds.csv`](outputs/final_fix_smoke/ablation_folds.csv)）。
+固定逻辑回归家族、共享同一组外层折做四组对比；`ablation_summary.csv` 同时记录相对原始特征的配对差值区间和 Holm 校正 p 值（逐折明细见 [`ablation_folds.csv`](outputs/run_final/ablation_folds.csv)）。
 
 上图右表是校准前后的历史留出集 Brier 分数（越低越好）。最终是否使用校准模型以外层 Brier 决策，而不是根据这一个留出集反向选模；sigmoid 也不保证改善概率质量。
 
@@ -184,12 +184,12 @@ telco-churn-ranking/
 ├── sql/segment_analysis.sql        # 分群汇总、交叉表与窗口排名查询
 ├── optional_ai/assistant.py        # 客户资料解读模板与可选接口调用
 ├── tests/test_project.py           # 端到端流程与看板 AppTest 测试
-├── outputs/final_fix_smoke/        # 本轮修复后的受控验证报告
+├── outputs/run_final/             # 唯一完整预算权威报告
 └── docs/                           # 流程图、截图、运行文档与面试核对提纲
 ```
 
 <details>
-<summary>outputs/final_fix_smoke/ 报告文件清单</summary>
+<summary>outputs/run_final/ 报告文件清单</summary>
 
 <br>
 
