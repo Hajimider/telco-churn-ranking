@@ -4,6 +4,7 @@ from itertools import combinations
 
 import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, ClassifierMixin
 from lightgbm import LGBMClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import RandomForestClassifier
@@ -18,6 +19,28 @@ LOGGER = logging.getLogger(__name__)
 MODEL_NAMES = ["逻辑回归", "随机森林", "LightGBM"]
 
 
+class LogitProbabilityWrapper(ClassifierMixin, BaseEstimator):
+    """为只有 predict_proba 的分类器提供无界 logit 校准分数。"""
+
+    def __init__(self, estimator):
+        self.estimator = estimator
+
+    def fit(self, X, y):
+        self.estimator_ = self.estimator.fit(X, y)
+        self.classes_ = self.estimator_.classes_
+        return self
+
+    def predict(self, X):
+        return self.estimator_.predict(X)
+
+    def predict_proba(self, X):
+        return self.estimator_.predict_proba(X)
+
+    def decision_function(self, X):
+        probabilities = np.clip(self.predict_proba(X)[:, 1], 1e-6, 1 - 1e-6)
+        return np.log(probabilities / (1 - probabilities))
+
+
 def tune_model(name, X, y, numeric_columns, seed, trials, inner_splits):
     from .pipeline import make_pipeline
     cv = StratifiedKFold(inner_splits, shuffle=True, random_state=seed)
@@ -29,10 +52,11 @@ def tune_model(name, X, y, numeric_columns, seed, trials, inner_splits):
         return make_pipeline(LGBMClassifier(**params), numeric_columns)
     if name == "逻辑回归":
         estimator = LogisticRegression(max_iter=2000, random_state=seed)
-        grid = {"model__C": [0.1, 1.0, 10.0]}
+        grid = {"model__C": [0.01, 0.1, 1.0, 10.0]}
     else:
         estimator = RandomForestClassifier(n_estimators=150, n_jobs=1, random_state=seed)
-        grid = {"model__min_samples_leaf": [2, 5, 10]}
+        grid = {"model__min_samples_leaf": [2, 5, 10],
+                "model__max_features": ["sqrt", 0.5]}
     search = GridSearchCV(make_pipeline(estimator, numeric_columns), grid,
                           scoring="average_precision", cv=cv, n_jobs=1, refit=False,
                           error_score="raise")
@@ -41,17 +65,16 @@ def tune_model(name, X, y, numeric_columns, seed, trials, inner_splits):
 
 
 def fit_pair(name, X, y, numeric_columns, seed, trials, inner_splits):
-    """外层训练集内调参，再交叉拟合 sigmoid；原始模型仅作校准前对照。
-
-    校准的 OOF 仅对基模型拟合隔离，超参数在当前训练子集选择，未做第三层
-    搜索隔离。校准效果必须由外层验证评估，不以内部拟合分数证明改善。
-    """
+    """只调参一次，再用固定超参的交叉拟合模型训练 sigmoid 校准器。"""
     estimator = tune_model(name, X, y, numeric_columns, seed, trials, inner_splits)
+    estimator.fit(X, y)
+    raw = estimator
     cv = StratifiedKFold(inner_splits, shuffle=True, random_state=seed + 1)
-    calibrated = CalibratedClassifierCV(estimator=estimator, method="sigmoid", cv=cv, ensemble=False)
+    calibration_estimator = (LogitProbabilityWrapper(estimator)
+                             if not hasattr(estimator, "decision_function") else estimator)
+    calibrated = CalibratedClassifierCV(estimator=calibration_estimator,
+                                        method="sigmoid", cv=cv, ensemble=False)
     calibrated.fit(X, y)
-    # ensemble=False 已在全部当前训练数据上重拟合基模型，无需再拟合一次。
-    raw = calibrated.calibrated_classifiers_[0].estimator
     return raw, calibrated
 
 
@@ -83,6 +106,7 @@ def nested_validation(X, y, feature_groups, *, outer_splits=5, repeats=3,
     auc_scores = {name: [] for name in MODEL_NAMES}
     fold_rows, ablation_rows = [], []
     columns = feature_groups["全部衍生"]
+    from .pipeline import LR_NUMERIC
     ratios = []
     for fold, (train, valid) in enumerate(outer):
         LOGGER.info("外层折 %s/%s", fold + 1, len(outer))
@@ -91,7 +115,8 @@ def nested_validation(X, y, feature_groups, *, outer_splits=5, repeats=3,
         counts[valid] += 1
         ratios.append(len(valid) / len(train))
         for name in MODEL_NAMES:
-            raw, calibrated = fit_pair(name, train_X, train_y, columns, seed + fold,
+            model_columns = LR_NUMERIC if name == "逻辑回归" else columns
+            raw, calibrated = fit_pair(name, train_X, train_y, model_columns, seed + fold,
                                        trials, inner_splits)
             p = calibrated.predict_proba(valid_X)[:, 1]
             p_raw = raw.predict_proba(valid_X)[:, 1]
@@ -101,11 +126,17 @@ def nested_validation(X, y, feature_groups, *, outer_splits=5, repeats=3,
             auc = float(roc_auc_score(valid_y, p))
             scores[name].append(ap)
             auc_scores[name].append(auc)
+            budget_k = max(1, int(len(valid_y) * 0.10))
+            top_k = np.argsort(-p)[:budget_k]
+            precision_at_k = float(np.asarray(valid_y)[top_k].mean())
+            prevalence = float(np.asarray(valid_y).mean())
             fold_rows.append({"外层折": fold, "重复": fold // outer_splits,
                               "模型": name, "AP": ap, "ROC-AUC": auc,
                               "原始AP": float(average_precision_score(valid_y, p_raw)),
                               "校准Brier": float(brier_score_loss(valid_y, p)),
-                              "原始Brier": float(brier_score_loss(valid_y, p_raw))})
+                              "原始Brier": float(brier_score_loss(valid_y, p_raw)),
+                              "Precision@10%": precision_at_k,
+                              "Lift@10%": precision_at_k / prevalence if prevalence else 0.0})
             if name == "逻辑回归":
                 ablation_rows.append({"外层折": fold, "特征组": "全部衍生", "AP": ap})
         for group, subset in feature_groups.items():
@@ -129,4 +160,5 @@ def nested_validation(X, y, feature_groups, *, outer_splits=5, repeats=3,
             "oof": {name: p / counts for name, p in oof.items()},
             "raw_oof": {name: p / counts for name, p in raw_oof.items()},
             "folds": pd.DataFrame(fold_rows), "ablation": pd.DataFrame(ablation_rows),
-            "comparisons": comparisons}
+            "comparisons": comparisons,
+            "test_train_ratio": float(np.mean(ratios))}

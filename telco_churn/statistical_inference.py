@@ -1,10 +1,14 @@
 """固定模型的测试集 Bootstrap 与相关交叉验证得分的近似比较。"""
 import numpy as np
 from scipy import stats
-from sklearn.metrics import average_precision_score, f1_score, precision_score, recall_score
+from sklearn.metrics import (
+    average_precision_score, brier_score_loss, f1_score, precision_score,
+    recall_score, roc_auc_score,
+)
 
 
-def bootstrap_metrics(y_true, y_pred_proba, n_bootstrap=1000, random_state=42, threshold=0.5):
+def bootstrap_metrics(y_true, y_pred_proba, n_bootstrap=1000, random_state=42,
+                     threshold=0.5, budget_ratio=None, sample_ids=None):
     """条件于已训练模型的百分位区间，不包含训练/选模不确定性。"""
     y = np.asarray(y_true)
     p = np.asarray(y_pred_proba, dtype=float)
@@ -17,8 +21,19 @@ def bootstrap_metrics(y_true, y_pred_proba, n_bootstrap=1000, random_state=42, t
     if (not isinstance(n_bootstrap, (int, np.integer)) or isinstance(n_bootstrap, bool)
             or n_bootstrap < 2 or not 0 <= threshold <= 1):
         raise ValueError("Bootstrap 次数至少为 2，阈值须在 [0, 1]。")
+    if budget_ratio is not None:
+        if (not isinstance(budget_ratio, (int, float, np.number)) or isinstance(budget_ratio, bool)
+                or not np.isfinite(budget_ratio) or not 0 < budget_ratio <= 1
+                or int(len(y) * budget_ratio) < 1):
+            raise ValueError("固定名额比例须在 (0, 1] 内，并至少选中一人。")
+    ids = None if sample_ids is None else np.asarray(sample_ids, dtype=str)
+    if ids is not None and (ids.shape != y.shape or (ids == "").any() or len(np.unique(ids)) != len(ids)):
+        raise ValueError("客户编号须与标签等长、非空且唯一。")
     rng = np.random.default_rng(random_state)
-    values = {name: [] for name in ("AP", "Precision", "Recall", "F1")}
+    names = ["AP", "ROC-AUC", "Brier", "Precision", "Recall", "F1"]
+    if budget_ratio is not None:
+        names.extend(("Precision@K", "Recall@K"))
+    values = {name: [] for name in names}
     for _ in range(n_bootstrap):
         indices = rng.integers(0, len(y), len(y))
         labels, scores = y[indices], p[indices]
@@ -26,8 +41,17 @@ def bootstrap_metrics(y_true, y_pred_proba, n_bootstrap=1000, random_state=42, t
             continue
         predicted = scores >= threshold
         values["AP"].append(average_precision_score(labels, scores))
+        values["ROC-AUC"].append(roc_auc_score(labels, scores))
+        values["Brier"].append(brier_score_loss(labels, scores))
         for name, function in [("Precision", precision_score), ("Recall", recall_score), ("F1", f1_score)]:
             values[name].append(function(labels, predicted, zero_division=0))
+        if budget_ratio is not None:
+            count = int(len(labels) * budget_ratio)
+            order = np.argsort(-scores, kind="stable") if ids is None else np.lexsort((ids[indices], -scores))
+            selected = order[:count]
+            hits = labels[selected].sum()
+            values["Precision@K"].append(float(hits / count))
+            values["Recall@K"].append(float(hits / labels.sum()))
     if len(values["AP"]) < 2:
         raise ValueError("有效 Bootstrap 次数不足，请增加重采样次数。")
     return {name: {"mean": float(np.mean(scores)),

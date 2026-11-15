@@ -16,7 +16,7 @@ WITH grouped_segments AS (
             WHEN '合同类型' THEN Contract
             WHEN '在网时长' THEN
                 CASE
-                    WHEN tenure <= 12 THEN '1-12 个月'
+                    WHEN tenure <= 12 THEN '0-12 个月'
                     WHEN tenure <= 24 THEN '13-24 个月'
                     WHEN tenure <= 48 THEN '25-48 个月'
                     ELSE '49 个月及以上'
@@ -30,6 +30,7 @@ WITH grouped_segments AS (
         END AS 分群,
         COUNT(*) AS 客户数,
         CAST(SUM(CASE WHEN Churn = 1 THEN 1 ELSE 0 END) AS UNSIGNED) AS 流失人数,
+        SUM(CASE WHEN Churn = 1 THEN MonthlyCharges ELSE 0 END) AS 流失月费敞口,
         1e0 * SUM(CASE WHEN Churn = 1 THEN 1 ELSE 0 END) / COUNT(*) AS 流失率
     FROM training_customers
     CROSS JOIN (
@@ -48,7 +49,7 @@ CREATE TEMPORARY TABLE contract_tenure_segments AS
 SELECT
     Contract AS 合同类型,
     CASE
-        WHEN tenure <= 12 THEN '1-12 个月'
+        WHEN tenure <= 12 THEN '0-12 个月'
         WHEN tenure <= 24 THEN '13-24 个月'
         WHEN tenure <= 48 THEN '25-48 个月'
         ELSE '49 个月及以上'
@@ -58,3 +59,40 @@ SELECT
     1e0 * SUM(CASE WHEN Churn = 1 THEN 1 ELSE 0 END) / COUNT(*) AS 流失率
 FROM training_customers
 GROUP BY 合同类型, 在网时长分组;
+
+-- 帕累托累计流失敞口：按各分群维度的历史流失人数累计排序。
+CREATE TEMPORARY TABLE churn_pareto AS
+WITH segment_exposure AS (
+    SELECT
+        分群维度,
+        分群,
+        客户数,
+        流失人数,
+        流失月费敞口,
+        流失率,
+        SUM(流失人数) OVER (
+            PARTITION BY 分群维度 ORDER BY 流失月费敞口 DESC, 分群
+            ROWS UNBOUNDED PRECEDING
+        ) AS 累计流失人数,
+        SUM(流失人数) OVER (PARTITION BY 分群维度) AS 维度总流失人数,
+        SUM(流失月费敞口) OVER (
+            PARTITION BY 分群维度 ORDER BY 流失月费敞口 DESC, 分群
+            ROWS UNBOUNDED PRECEDING
+        ) AS 累计流失月费敞口,
+        SUM(流失月费敞口) OVER (PARTITION BY 分群维度) AS 维度总流失月费敞口
+    FROM customer_segments
+)
+SELECT
+    分群维度,
+    分群,
+    客户数,
+    流失人数,
+    ROUND(流失月费敞口, 2) AS 流失月费敞口,
+    ROUND(流失率, 4) AS 流失率,
+    累计流失人数,
+    ROUND(1e0 * 累计流失人数 / NULLIF(维度总流失人数, 0), 4) AS 累计流失占比,
+    累计流失月费敞口,
+    ROUND(1e0 * 累计流失月费敞口 / NULLIF(维度总流失月费敞口, 0), 4) AS 累计流失月费敞口占比,
+    RANK() OVER (PARTITION BY 分群维度 ORDER BY 流失月费敞口 DESC) AS 流失月费敞口排名
+FROM segment_exposure
+ORDER BY 分群维度, 流失月费敞口 DESC, 分群;

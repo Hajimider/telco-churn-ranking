@@ -11,6 +11,19 @@ from .pipeline import make_pipeline, engineer_features, select_f1_threshold
 from .statistical_inference import bootstrap_metrics, compare_models_paired_t_test
 
 
+def test_tune_model_runs_real_logistic_and_random_forest_searches():
+    from . import pipeline, validation
+    X = pd.DataFrame({"value": np.linspace(-2, 2, 24)})
+    for column in pipeline.CATEGORICAL_COLUMNS:
+        X[column] = "No"
+    y = pd.Series([0, 1] * 12)
+    for name in ("逻辑回归", "随机森林"):
+        model = validation.tune_model(name, X, y, ["value"], seed=7,
+                                       trials=1, inner_splits=2)
+        model.fit(X, y)
+        assert np.isfinite(model.predict_proba(X)).all()
+
+
 def test_styled_diagnostics_can_render_from_saved_tables(tmp_path):
     from .reporting import render_diagnostics
     calibration, pr, comparison = [], [], []
@@ -66,6 +79,43 @@ def test_bootstrap_does_not_touch_global_random_state():
     assert result["AP"]["有效次数"] >= 2
 
 
+def test_bootstrap_reports_fixed_capacity_metrics_deterministically():
+    y = np.array([0, 1, 0, 1, 0, 1, 0, 1])
+    scores = np.array([.1, .9, .3, .8, .2, .7, .4, .6])
+    ids = [f"C{i}" for i in range(len(y))]
+    first = bootstrap_metrics(y, scores, n_bootstrap=80, random_state=17,
+                              budget_ratio=.25, sample_ids=ids)
+    second = bootstrap_metrics(y, scores, n_bootstrap=80, random_state=17,
+                               budget_ratio=.25, sample_ids=ids)
+    assert first == second
+    assert set(first) == {
+        "AP", "ROC-AUC", "Brier", "Precision", "Recall", "F1",
+        "Precision@K", "Recall@K",
+    }
+    assert all(0 <= interval["ci_lower"] <= interval["ci_upper"] <= 1
+               for interval in first.values())
+    with pytest.raises(ValueError, match="固定名额比例"):
+        bootstrap_metrics(y, scores, n_bootstrap=10, budget_ratio=.01)
+
+
+def test_bootstrap_topk_ties_follow_customer_id_order():
+    y = np.array([1, 0, 1, 0])
+    scores = np.full(4, .5)
+    ids = np.array(["d", "a", "c", "b"])
+    seed, iterations = 31, 100
+    result = bootstrap_metrics(y, scores, n_bootstrap=iterations, random_state=seed,
+                               budget_ratio=.25, sample_ids=ids)
+    rng = np.random.default_rng(seed)
+    expected = []
+    for indices in rng.integers(0, len(y), size=(iterations, len(y))):
+        labels = y[indices]
+        if np.unique(labels).size < 2:
+            continue
+        selected = indices[np.lexsort((ids[indices], -scores[indices]))[0]]
+        expected.append(y[selected])
+    assert result["Precision@K"]["mean"] == pytest.approx(np.mean(expected))
+
+
 def test_logistic_bootstrap_preserves_fitted_model_and_feature_coordinates():
     X = pd.DataFrame({"value": np.arange(40, dtype=float), "category": ["a"] * 39 + ["rare"]})
     y = pd.Series([0, 1] * 20)
@@ -89,6 +139,16 @@ def test_sqlite_segments_need_no_credentials(monkeypatch):
     assert overall.iloc[0]["流失率"] == pytest.approx(1 / 3)
     assert groups["客户数"].sum() == 9
     assert cross["客户数"].sum() == 3
+
+
+def test_sqlite_pareto_exports_monthly_exposure(monkeypatch):
+    monkeypatch.delenv("CHURN_MYSQL_PASSWORD", raising=False)
+    frame = pd.DataFrame({"Contract": ["Month-to-month", "Two year", "Two year"],
+                          "tenure": [6, 48, 60], "MonthlyCharges": [90, 60, 30],
+                          "Churn": [1, 0, 0]})
+    *_, pareto = analyze_training_segments(frame, include_pareto=True)
+    assert "流失月费敞口" in pareto.columns
+    assert pareto.iloc[0]["流失月费敞口"] >= pareto.iloc[-1]["流失月费敞口"]
 
 
 def test_threshold_rejects_fractional_labels_and_matches_brute_force():
@@ -142,10 +202,15 @@ def test_fit_pair_returns_the_calibrated_full_training_estimator(monkeypatch):
     from . import validation
     X = pd.DataFrame({"value": np.arange(40, dtype=float)})
     y = pd.Series([0, 1] * 20)
-    monkeypatch.setattr(validation, "tune_model", lambda *args: make_pipeline(
-        LogisticRegression(max_iter=1000), ["value"], []))
+    tuned_rows = []
+
+    def tune(name, subset, labels, columns, seed, trials, inner_splits):
+        tuned_rows.append(tuple(subset.index))
+        return make_pipeline(LogisticRegression(max_iter=1000), columns, [])
+
+    monkeypatch.setattr(validation, "tune_model", tune)
     raw, calibrated = validation.fit_pair("逻辑回归", X, y, ["value"], 42, 1, 2)
-    assert raw is calibrated.calibrated_classifiers_[0].estimator
+    assert tuned_rows == [tuple(X.index)]
     assert raw.predict_proba(X).shape == (40, 2)
     assert np.isfinite(calibrated.predict_proba(X)).all()
 
@@ -188,8 +253,13 @@ def test_pipeline_freezes_decisions_before_test_labels(monkeypatch, tmp_path):
     assert original["阈值评估"] == changed["阈值评估"]
     assert original["名额敏感性"]["训练OOF选择名额比例"] == changed["名额敏感性"]["训练OOF选择名额比例"]
     assert (tmp_path / "first" / "metrics.json").is_file()
+    assert original["报告版本"] == 4
+    intervals = original["模型"]["LightGBM"]["Bootstrap置信区间"]
+    assert {"ROC-AUC", "Brier", "Precision@K", "Recall@K"}.issubset(intervals)
     assert len(pd.read_csv(tmp_path / "first" / "business_scenarios.csv")) == 27
     assert original["生存分析"]["状态"] == "默认禁用"
+    assert any(not decision["使用校准模型"]
+               for decision in original["校准决策"].values())
 
 
 def test_nested_validation_rejects_insufficient_minority():

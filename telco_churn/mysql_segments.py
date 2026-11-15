@@ -44,7 +44,7 @@ def connect_mysql():
         ) from None
 
 
-def analyze_training_segments(training_frame, backend="sqlite"):
+def analyze_training_segments(training_frame, backend="sqlite", include_pareto=False):
     """默认本机内存 SQLite；显式选择 mysql 时不静默吞掉连接错误。"""
     values = training_frame[["Contract", "tenure", "Churn"]].copy()
     # 交叉分群调用只需三列；缺少月费时不影响其结果。
@@ -57,8 +57,10 @@ def analyze_training_segments(training_frame, backend="sqlite"):
         with closing(sqlite3.connect(":memory:")) as connection:
             values.to_sql("training_customers", connection, index=False)
             connection.executescript(statements)
-            return tuple(pd.read_sql_query(f"SELECT * FROM {table}", connection)
-                         for table in ["overall_churn", "customer_segments", "contract_tenure_segments"])
+            tables = ["overall_churn", "customer_segments", "contract_tenure_segments"]
+            if include_pareto:
+                tables.append("churn_pareto")
+            return tuple(pd.read_sql_query(f"SELECT * FROM {table}", connection) for table in tables)
     if backend != "mysql":
         raise ValueError("分群后端须为 sqlite 或 mysql。")
     try:
@@ -81,7 +83,10 @@ def analyze_training_segments(training_frame, backend="sqlite"):
                     if statement.strip():
                         cursor.execute(statement)
                 results = []
-                for table in ["overall_churn", "customer_segments", "contract_tenure_segments"]:
+                tables = ["overall_churn", "customer_segments", "contract_tenure_segments"]
+                if include_pareto:
+                    tables.append("churn_pareto")
+                for table in tables:
                     cursor.execute(f"SELECT * FROM {table}")
                     results.append(pd.DataFrame.from_records(
                         cursor.fetchall(), columns=[column[0] for column in cursor.description]))

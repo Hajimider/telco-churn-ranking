@@ -32,9 +32,6 @@ def _load_project_env(path=None):
         os.environ[key] = value
 
 
-_load_project_env()
-
-
 AI_ALLOWED_FIELDS = {
     "customerID", "model_name", "rank", "risk_score", "tenure", "Contract",
     "MonthlyCharges", "InternetService", "PaymentMethod", "TechSupport",
@@ -202,6 +199,7 @@ def _as_list(value):
 
 def generate_explanation(context, settings=None):
     """调用远程接口；配置缺失或调用失败时返回模板解读。"""
+    _load_project_env()
     settings = os.environ if settings is None else settings
     base_url = str(settings.get("CHURN_AI_BASE_URL", "")).strip()
     model = str(settings.get("CHURN_AI_MODEL", "")).strip()

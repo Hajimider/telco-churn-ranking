@@ -100,6 +100,38 @@ def test_prepare_data_converts_blank_total_charges():
     assert ids.is_unique
 
 
+def test_tenure_zero_total_charges_zero_filled():
+    frame = sample_data()
+    frame.loc[0, "tenure"] = 0
+    frame["TotalCharges"] = frame["TotalCharges"].astype(object)
+    frame.loc[0, "TotalCharges"] = " "
+    X, _, _ = prepare_data(frame)
+    assert X.loc[0, "TotalCharges"] == 0.0
+
+
+def test_feature_label_no_spurious_match():
+    from dashboard import feature_label
+    assert "contract_month" not in feature_label("numeric__tenure_contract_month")
+    assert feature_label("numeric__tenure") == "在网时长（月）"
+
+
+def test_tune_lightgbm_integration():
+    from lightgbm import LGBMClassifier
+    from telco_churn.lightgbm_tuning import tune_lightgbm
+
+    frame = sample_data(80)
+    X, y, _ = prepare_data(frame)
+    X = pipeline.engineer_features(X)
+    params, _, _ = tune_lightgbm(
+        X, y.to_numpy(), n_trials=2, n_jobs=1, n_splits=2, random_state=0,
+        estimator_factory=lambda values: pipeline.make_pipeline(
+            LGBMClassifier(**values), pipeline.ENGINEERED_NUMERIC),
+    )
+    model = pipeline.make_pipeline(LGBMClassifier(**params), pipeline.ENGINEERED_NUMERIC)
+    model.fit(X, y)
+    assert model.predict_proba(X).shape == (len(X), 2)
+
+
 @pytest.mark.parametrize("change", ["missing", "duplicate", "single_label"])
 def test_bad_input(change):
     frame = sample_data()
@@ -120,9 +152,9 @@ def test_run_pipeline_writes_results(monkeypatch):
         captured = []
         original_analyze = pipeline.analyze_training_segments
 
-        def capture_training_segments(training_frame, backend="sqlite"):
+        def capture_training_segments(training_frame, backend="sqlite", include_pareto=False):
             captured.append((set(training_frame.customerID), backend))
-            return original_analyze(training_frame, backend=backend)
+            return original_analyze(training_frame, backend=backend, include_pareto=include_pareto)
 
         monkeypatch.setattr(pipeline, "analyze_training_segments", capture_training_segments)
         metrics = run_pipeline(sample_data(), output)
@@ -154,6 +186,7 @@ def test_run_pipeline_writes_results(monkeypatch):
         assert (output / "overall_summary.csv").is_file()
         assert (output / "segment_inference.csv").is_file()
         assert (output / "contract_tenure_segments.csv").is_file()
+        assert (output / "segment_pareto.csv").is_file()
         assert (output / "model_comparison_test.csv").is_file()
         assert (output / "logistic_coefficients.csv").is_file()
         assert (output / "shap_summary.png").is_file()
@@ -178,9 +211,13 @@ def test_run_pipeline_writes_results(monkeypatch):
         assert set(zip(calibration["模型"], calibration["状态"])) == set(
             product(metrics["模型"], ["原始", "sigmoid"]))
         assert np.isfinite(calibration[["AP", "Brier"]]).all().all()
-        for row in calibration.loc[calibration["状态"].eq("sigmoid")].to_dict("records"):
-            assert row["AP"] == pytest.approx(metrics["模型"][row["模型"]]["AP（平均精确率）"])
-            assert row["Brier"] == pytest.approx(metrics["模型"][row["模型"]]["Brier"])
+        for name in metrics["模型"]:
+            state = "sigmoid" if metrics["校准决策"][name]["使用校准模型"] else "原始"
+            row = calibration.loc[
+                calibration["模型"].eq(name) & calibration["状态"].eq(state)
+            ].iloc[0]
+            assert row["AP"] == pytest.approx(metrics["模型"][name]["AP（平均精确率）"])
+            assert row["Brier"] == pytest.approx(metrics["模型"][name]["Brier"])
         calibration_cv = pd.read_csv(output / "calibration_cv.csv").set_index("模型")
         pd.testing.assert_frame_equal(
             calibration_cv.sort_index(),
@@ -322,7 +359,7 @@ def test_dashboard_renders_chinese_headers(monkeypatch):
         assert not app.main.radio
         assert app.sidebar.radio[0].options == ["报告总览", "客户差异", "模型验证", "模型解释", "触达排序", "AI风险解读"]
         labels = [metric.label for metric in app.metric]
-        assert labels == ["客户总量", "测试集 AP", "优先名单命中率", "相对随机提升倍数"]
+        assert labels == ["客户总量", "历史留出 AP", "优先名单命中率", "相对随机提升倍数"]
         assert app.expander[0].label == "数据来源与评估口径"
         app.sidebar.radio[0].set_value("模型验证").run(timeout=30)
         assert not app.exception and not app.error
@@ -415,11 +452,11 @@ def test_dashboard_pages_show_only_their_own_content(report_project, monkeypatch
     app = AppTest.from_file(str(report_project / "dashboard.py")).run(timeout=30)
     assert app.sidebar.radio[0].value == "报告总览"
     pages = [
-        ("报告总览", "电信客户流失预测与排序", ["客户总量", "测试集 AP", "优先名单命中率", "相对随机提升倍数"], None),
+        ("报告总览", "电信客户流失预测与排序", ["客户总量", "历史留出 AP", "优先名单命中率", "相对随机提升倍数"], None),
         ("客户差异", "训练集客户分群", ["训练集客户数", "训练集流失人数", "训练集流失率"], "选择分群维度"),
-        ("模型验证", "模型验证", ["主模型", "外层 AP 均值", "测试集 AP", "测试集 ROC-AUC"], None),
+        ("模型验证", "模型验证", ["主模型", "外层 AP 均值", "留出集 AP", "留出集 ROC-AUC"], None),
         ("模型解释", "模型解释", [], "查看高风险客户解释"),
-        ("触达排序", "固定 10% 名额下的策略对照", ["优先触达名额", "命中历史流失人数", "优先名单命中率", "相对随机提升倍数"], "查看策略的测试集示例"),
+        ("触达排序", "固定 10% 名额下的策略对照", ["优先触达名额", "命中历史流失人数", "优先名单命中率", "相对随机提升倍数"], "查看策略的历史留出集示例"),
         ("AI风险解读", "AI 风险解读与触达建议", [], "选择主模型固定容量优先客户"),
     ]
     for page, title, metric_labels, selector in pages:
@@ -445,6 +482,9 @@ def test_dashboard_pages_show_only_their_own_content(report_project, monkeypatch
             assert "合同类型 × 在网时长" in [item.value for item in app.subheader]
         elif page == "模型验证":
             assert app.metric[0].value == metrics["交叉验证"]["选择模型"]
+            assert "历史留出集指标" in [item.value for item in app.subheader]
+            assert "历史留出集 Bootstrap 区间" in [item.value for item in app.subheader]
+            assert any("条件于已拟合模型" in item.value for item in app.caption)
             assert "训练集折外阈值对照" in [item.value for item in app.subheader]
         elif page == "报告总览":
             assert app.metric[0].value == f"{metrics['样本数']:,}"

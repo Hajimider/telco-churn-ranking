@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 
 
 def budget_table(labels, scores, ids, monthly_values, k_range=None,
-                 cost_per_contact=50, avg_remaining_months=12, retention_success_rate=0.3):
+                 cost_per_contact=50, avg_remaining_months=12, retention_success_rate=0.3,
+                 rank_by_value=False):
     y, score = np.asarray(labels), np.asarray(scores, dtype=float)
     ids, values = np.asarray(ids, dtype=str), np.asarray(monthly_values, dtype=float)
     if y.ndim != 1 or not len(y) or any(a.shape != y.shape for a in (score, ids, values)):
@@ -24,8 +25,9 @@ def budget_table(labels, scores, ids, monthly_values, k_range=None,
     ratios = np.asarray(np.linspace(0, 1, 21) if k_range is None else k_range, float)
     if ratios.ndim != 1 or not len(ratios) or not np.isfinite(ratios).all() or ((ratios < 0) | (ratios > 1)).any():
         raise ValueError("名额比例须为 [0,1] 内的非空一维序列。")
-    ratios = np.unique(np.r_[0.0, ratios, 1.0])
-    order = np.lexsort((ids, -score))
+    ratios = np.round(np.unique(np.r_[0.0, ratios, 1.0]), 4)
+    sort_key = score * values if rank_by_value else score
+    order = np.lexsort((ids, -sort_key))
     cumulative_hits = np.r_[0, np.cumsum(y[order])]
     cumulative_value = np.r_[0, np.cumsum(y[order] * values[order])]
     prevalence = float(y.mean())
@@ -49,11 +51,12 @@ def select_budget(table):
     return float(row["K比例"])
 
 
-def business_scenarios(labels, scores, ids, monthly_values):
+def business_scenarios(labels, scores, ids, monthly_values, rank_by_value=False):
     rows = []
     for cost, success, months in product([20, 50, 100], [0.1, 0.2, 0.3], [6, 12, 24]):
         table = budget_table(labels, scores, ids, monthly_values, cost_per_contact=cost,
-                             retention_success_rate=success, avg_remaining_months=months)
+                             retention_success_rate=success, avg_remaining_months=months,
+                             rank_by_value=rank_by_value)
         ratio = select_budget(table)
         row = table.loc[table["K比例"].eq(ratio)].iloc[0]
         rows.append({"触达成本": cost, "假设成功率": success, "假设剩余月数": months,
@@ -64,26 +67,29 @@ def business_scenarios(labels, scores, ids, monthly_values):
 def budget_sensitivity_analysis(y_test, scores, test_ids, output_dir,
                                 k_range=None, cost_per_contact=50, avg_monthly_value=60,
                                 avg_remaining_months=12, retention_success_rate=0.3,
-                                monthly_values=None, selected_k=None):
+                                monthly_values=None, selected_k=None, rank_by_value=False,
+                                output_name="budget_sensitivity.csv", curve_name="budget_curve.png"):
     """评估冻结 K；缺少训练选择结果时只输出描述曲线，不从测试标签选 K。"""
     values = np.full(len(y_test), avg_monthly_value) if monthly_values is None else monthly_values
     table = budget_table(y_test, scores, test_ids, values, k_range, cost_per_contact,
-                         avg_remaining_months, retention_success_rate)
-    table.to_csv(output_dir / "budget_sensitivity.csv", index=False, encoding="utf-8-sig")
+                         avg_remaining_months, retention_success_rate, rank_by_value=rank_by_value)
+    table.to_csv(output_dir / output_name, index=False, encoding="utf-8-sig")
     fig, axes = plt.subplots(1, 2, figsize=(11, 4))
     axes[0].plot(table["K比例"], table["Precision@K"], color="black", label="Precision@K")
     axes[0].plot(table["K比例"], table["Recall@K"], color="black", linestyle="--", label="Recall@K")
     axes[0].set(ylabel="历史标签命中比例", title="测试集描述曲线（不选名额）")
     axes[0].legend()
-    axes[1].plot(table["K比例"], table["期望净收益"], color="black")
+    axes[1].plot(table["K比例"], table["期望净收益"], color="black",
+                 label="期望价值排序" if rank_by_value else "纯风险排序")
     axes[1].axhline(0, color="gray", linestyle=":")
     axes[1].set(ylabel="假设情景净收益（非实测，元）", title="历史标签收益情景")
+    axes[1].legend()
     for ax in axes:
         ax.set_xlabel("联系名额比例")
         if selected_k is not None:
             ax.axvline(selected_k, color="gray", linestyle="--", label="训练OOF冻结K")
         ax.grid(alpha=0.15)
     fig.tight_layout()
-    fig.savefig(output_dir / "budget_curve.png", dpi=150, bbox_inches="tight")
+    fig.savefig(output_dir / curve_name, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return table, selected_k

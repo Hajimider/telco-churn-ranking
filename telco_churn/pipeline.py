@@ -10,7 +10,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -32,9 +31,8 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from scipy.stats import chi2_contingency
 
 from .chart_font import configure_chart_font
-from .lightgbm_tuning import tune_lightgbm
 from .model_explanation import explain_logistic_regression, explain_shap
-from .statistical_inference import bootstrap_metrics
+from .statistical_inference import bootstrap_metrics, compare_models_paired_t_test
 from .budget_analysis import budget_sensitivity_analysis
 from .mysql_segments import analyze_training_segments
 
@@ -56,15 +54,18 @@ CATEGORICAL_COLUMNS = sorted(REQUIRED_COLUMNS - {"customerID", "Churn"} - set(NU
 FEATURE_GROUPS = {
     "原始特征": NUMERIC_COLUMNS,
     "原始+费用": NUMERIC_COLUMNS + ["charges_deviation", "has_high_charges"],
-    "原始+服务": NUMERIC_COLUMNS + ["service_count", "has_internet", "full_protection"],
+    "原始+服务": NUMERIC_COLUMNS + ["full_protection"],
     "全部衍生": NUMERIC_COLUMNS + [
-        "charges_deviation", "has_high_charges", "service_count", "has_internet",
+        "charges_deviation", "has_high_charges", "service_count",
         "full_protection", "is_new_customer", "is_loyal_customer", "tenure_contract_month",
         "auto_payment", "paperless_risky", "has_family", "single_senior",
     ],
 }
 # tenure_contract_year 与 tenure - tenure_contract_month 恒等，不重复进入模型。
 ENGINEERED_NUMERIC = FEATURE_GROUPS["全部衍生"]
+# 逻辑回归使用低共线数值集：用月费偏差代表月费溢价，避免与套餐明细共线。
+LR_NUMERIC = [column for column in ENGINEERED_NUMERIC
+              if column not in {"MonthlyCharges", "service_count", "auto_payment", "has_internet"}]
 ENGINEERED_CATEGORICAL = CATEGORICAL_COLUMNS  # 类别列保持不变
 AI_CONTEXT_COLUMNS = [
     "tenure", "Contract", "MonthlyCharges", "InternetService", "PaymentMethod",
@@ -97,6 +98,10 @@ def prepare_data(frame):
         if invalid.any():
             raise ValueError(f"{column} 列含有无法转换的数值。")
         X[column] = values.astype(float)
+        # tenure==0 表示新入网客户，空 TotalCharges 是结构性零值而非随机缺失。
+        if column == "TotalCharges":
+            zero_tenure_missing = (X["tenure"] == 0) & X[column].isna()
+            X.loc[zero_tenure_missing, column] = 0.0
         if np.isinf(X[column]).any() or (X[column].dropna() < 0).any():
             raise ValueError(f"{column} 须为非负有限数值或缺失值。")
     if X[["tenure", "MonthlyCharges"]].isna().any().any():
@@ -110,6 +115,12 @@ def engineer_features(X):
     """创建衍生特征以增强模型表现。"""
     X = X.copy()
 
+    # 未开通服务的占位类别已由 InternetService/PhoneService 完整表达。
+    for column in ["OnlineSecurity", "OnlineBackup", "DeviceProtection",
+                   "TechSupport", "StreamingTV", "StreamingMovies"]:
+        X[column] = X[column].replace("No internet service", "No")
+    X["MultipleLines"] = X["MultipleLines"].replace("No phone service", "No")
+
     # 费用相关特征
     X["charges_deviation"] = np.where(
         X["tenure"] > 0,
@@ -122,7 +133,6 @@ def engineer_features(X):
     service_cols = ["OnlineSecurity", "OnlineBackup", "DeviceProtection",
                     "TechSupport", "StreamingTV", "StreamingMovies"]
     X["service_count"] = sum((X[col] == "Yes").astype(int) for col in service_cols)
-    X["has_internet"] = (X["InternetService"] != "No").astype(int)
 
     protection_cols = ["OnlineSecurity", "OnlineBackup", "DeviceProtection", "TechSupport"]
     X["full_protection"] = (sum((X[col] == "Yes").astype(int) for col in protection_cols) == 4).astype(int)
@@ -131,7 +141,6 @@ def engineer_features(X):
     X["is_new_customer"] = (X["tenure"] <= 6).astype(int)
     X["is_loyal_customer"] = (X["tenure"] >= 36).astype(int)
     X["tenure_contract_month"] = (X["Contract"] == "Month-to-month").astype(int) * X["tenure"]
-    X["tenure_contract_year"] = (X["Contract"].isin(["One year", "Two year"])).astype(int) * X["tenure"]
 
     # 支付与账单特征
     X["auto_payment"] = (X["PaymentMethod"].isin(["Bank transfer (automatic)",
@@ -161,12 +170,15 @@ def make_pipeline(estimator, numeric_cols=None, categorical_cols=None):
     ])
     categorical = Pipeline([
         ("fill_missing", SimpleImputer(strategy="most_frequent")),
-        ("one_hot", OneHotEncoder(handle_unknown="ignore", drop="first")),
+        ("one_hot", OneHotEncoder(handle_unknown="ignore", drop="first", sparse_output=False)),
     ])
     preprocess = ColumnTransformer([
         ("numeric", numeric, numeric_cols),
         ("categorical", categorical, categorical_cols),
     ])
+    numeric.set_output(transform="pandas")
+    categorical.set_output(transform="pandas")
+    preprocess.set_output(transform="pandas")
     return Pipeline([("preprocess", preprocess), ("model", estimator)])
 
 
@@ -304,7 +316,7 @@ def evaluate_policy(name, labels, ids, scores, budget_count):
 
 def _tenure_group(value):
     if value <= 12:
-        return "1-12 个月"
+        return "0-12 个月"
     if value <= 24:
         return "13-24 个月"
     if value <= 48:
@@ -403,7 +415,8 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42, *,
     train_frame = X.iloc[train_idx].copy()
     train_frame["customerID"] = ids.iloc[train_idx].to_numpy()
     train_frame["Churn"] = y_train.to_numpy()
-    overall, segments, cross_segments = analyze_training_segments(train_frame, backend=backend)
+    overall, segments, cross_segments, pareto = analyze_training_segments(
+        train_frame, backend=backend, include_pareto=True)
     segments["小样本"] = segments["客户数"] < 30
     segments = add_wilson_intervals(segments)
     inference = analyze_segment_associations(train_frame.assign(
@@ -420,14 +433,12 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42, *,
         X_train, y_train, FEATURE_GROUPS, outer_splits=outer_splits, repeats=repeats,
         inner_splits=inner_splits, trials=trials, seed=random_state)
     cv_scores = validation["scores"]
-    oof_probabilities = validation["oof"]
     models, calibrated_models = {}, {}
     for name in MODEL_NAMES:
+        numeric_columns = LR_NUMERIC if name == "逻辑回归" else ENGINEERED_NUMERIC
         models[name], calibrated_models[name] = fit_pair(
-            name, X_train, y_train, ENGINEERED_NUMERIC, random_state, trials, inner_splits)
+            name, X_train, y_train, numeric_columns, random_state, trials, inner_splits)
     best_lgb_params = models["LightGBM"].named_steps["model"].get_params()
-    thresholds = {name: select_f1_threshold(y_train, scores)
-                  for name, scores in oof_probabilities.items()}
     selected_model = max(models, key=lambda name: float(np.mean(cv_scores[name])))
     predictions = pd.DataFrame({"customerID": test_ids.to_numpy(), "actual_churn": y_test.to_numpy()})
     predictions["tenure"] = X_test["tenure"].to_numpy()
@@ -440,29 +451,53 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42, *,
         "test_size": float(test_size),
         "名额比例": 0.10,
         "LightGBM最优参数": best_lgb_params,
-        "报告版本": 3,
+        "报告版本": 4,
         "运行溯源": run_metadata(frame, random_state),
         "交叉验证": {
             "折数": outer_splits,
             "重复次数": repeats,
             "内层折数": inner_splits,
             "Optuna轮数": trials,
-            "方法": "嵌套重复分层CV，训练折内调参与sigmoid校准",
+            "方法": "嵌套重复分层CV，外层训练集调参后交叉拟合sigmoid校准",
             "AUC均值": {name: float(np.mean(values)) for name, values in validation["auc_scores"].items()},
             "选择模型": selected_model,
             "AP均值": {name: float(np.mean(scores)) for name, scores in cv_scores.items()},
             "AP标准差": {name: float(np.std(scores, ddof=1)) for name, scores in cv_scores.items()},
             "各折AP": {name: [float(value) for value in scores] for name, scores in cv_scores.items()},
+            "Precision@10%均值": {
+                name: float(validation["folds"].loc[validation["folds"]["模型"].eq(name), "Precision@10%"].mean())
+                for name in MODEL_NAMES
+            },
         },
         "模型": {},
-        "阈值评估": {name: {"折外F1阈值": threshold,
-                           "折外F1": float(f1_score(y_train, oof_probabilities[name] >= threshold,
-                                                    zero_division=0))}
-                    for name, threshold in thresholds.items()},
+        "阈值评估": {},
     }
 
+    calibration_use = {
+        name: bool(validation["folds"].loc[validation["folds"]["模型"].eq(name), "校准Brier"].mean()
+                  <= validation["folds"].loc[validation["folds"]["模型"].eq(name), "原始Brier"].mean())
+        for name in MODEL_NAMES
+    }
+    metrics["校准决策"] = {
+        name: {"使用校准模型": use, "理由": "外层折校准Brier不高于原始Brier" if use
+               else "外层折校准Brier高于原始Brier，测试集使用原始模型"}
+        for name, use in calibration_use.items()
+    }
+    oof_probabilities = {
+        name: (validation["oof"][name] if calibration_use[name] else validation["raw_oof"][name])
+        for name in validation["oof"]
+    }
+    thresholds = {name: select_f1_threshold(y_train, scores)
+                  for name, scores in oof_probabilities.items()}
+    metrics["阈值评估"] = {
+        name: {"折外F1阈值": threshold,
+               "折外F1": float(f1_score(y_train, oof_probabilities[name] >= threshold,
+                                         zero_division=0))}
+        for name, threshold in thresholds.items()
+    }
     model_scores = {}
-    for name, model in calibrated_models.items():
+    for name, calibrated in calibrated_models.items():
+        model = calibrated if calibration_use[name] else models[name]
         probability = model.predict_proba(X_test)[:, 1]
         predicted = (probability >= 0.5).astype(int)
         threshold_predicted = (probability >= thresholds[name]).astype(int)
@@ -486,12 +521,36 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42, *,
     # Bootstrap 置信区间
     logging.info("正在计算 Bootstrap 置信区间...")
     for name, probability in model_scores.items():
-        boot_ci = bootstrap_metrics(y_test.to_numpy(), probability, n_bootstrap=n_bootstrap, random_state=random_state)
+        boot_ci = bootstrap_metrics(
+            y_test.to_numpy(), probability, n_bootstrap=n_bootstrap,
+            random_state=random_state, budget_ratio=metrics["名额比例"],
+            sample_ids=test_ids.to_numpy(),
+        )
         metrics["模型"][name]["Bootstrap置信区间"] = boot_ci
 
     # 模型比较统计检验
     model_comparisons = validation["comparisons"]
     metrics["模型比较检验"] = model_comparisons
+    model_means = {name: float(np.mean(values)) for name, values in cv_scores.items()}
+    model_stds = {name: float(np.std(values, ddof=1)) for name, values in cv_scores.items()}
+    best_mean_model = max(model_means, key=model_means.get)
+    one_se = model_stds[best_mean_model] / np.sqrt(len(cv_scores[best_mean_model]))
+    one_se_cutoff = model_means[best_mean_model] - one_se
+    simplicity_order = ["逻辑回归", "随机森林", "LightGBM"]
+    one_se_model = next(name for name in simplicity_order if model_means[name] >= one_se_cutoff)
+    lr_lgb_p = next((row["校正后p值"] for row in model_comparisons
+                     if {row["模型1"], row["模型2"]} == {"逻辑回归", "LightGBM"}), None)
+    metrics["简约性分析"] = {
+        "最高均值模型": best_mean_model,
+        "最高均值": model_means[best_mean_model],
+        "1SE阈值": one_se_cutoff,
+        "1SE简约候选": one_se_model,
+        "推荐选模": one_se_model,
+        "模型AP均值": model_means,
+        "模型AP标准差": model_stds,
+        "LR与LightGBM Holm校正p值": lr_lgb_p,
+        "理由": "1-SE 规则允许在最高均值模型一个标准误内选择更简约的模型；该选择不代表模型等效或因果收益。",
+    }
     metrics["生存分析"] = {
         "状态": "默认禁用",
         "原因": "静态快照缺少可靠事件日期、入组及删失机制，不能验证标准生存分析假设。",
@@ -499,6 +558,30 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42, *,
     validation["folds"].to_csv(output / "nested_cv_folds.csv", index=False, encoding="utf-8-sig")
     validation["ablation"].to_csv(output / "ablation_folds.csv", index=False, encoding="utf-8-sig")
     ablation = validation["ablation"].groupby("特征组")["AP"].agg(["mean", "std"]).reset_index()
+    baseline = validation["ablation"].loc[
+        validation["ablation"]["特征组"].eq("原始特征")
+    ].sort_values("外层折")["AP"].to_numpy()
+    ablation_comparisons = []
+    for group in ablation["特征组"]:
+        values = validation["ablation"].loc[
+            validation["ablation"]["特征组"].eq(group)
+        ].sort_values("外层折")["AP"].to_numpy()
+        comparison = compare_models_paired_t_test(
+            values, baseline, group, "原始特征", validation["test_train_ratio"])
+        ablation_comparisons.append(comparison)
+    adjusted = holm_adjust([row["p值"] for row in ablation_comparisons])
+    comparison_by_group = {row["模型1"]: (row, float(p))
+                           for row, p in zip(ablation_comparisons, adjusted)}
+    ablation["相对原始均值差异"] = ablation["特征组"].map(
+        lambda group: comparison_by_group[group][0]["均值差异"])
+    ablation["差值区间下限"] = ablation["特征组"].map(
+        lambda group: comparison_by_group[group][0]["差值区间下限"])
+    ablation["差值区间上限"] = ablation["特征组"].map(
+        lambda group: comparison_by_group[group][0]["差值区间上限"])
+    ablation["p值"] = ablation["特征组"].map(
+        lambda group: comparison_by_group[group][0]["p值"])
+    ablation["Holm校正p值"] = ablation["特征组"].map(
+        lambda group: comparison_by_group[group][1])
     ablation.to_csv(output / "ablation_summary.csv", index=False, encoding="utf-8-sig")
     X_train[ENGINEERED_NUMERIC].corr().to_csv(output / "numeric_correlations.csv", encoding="utf-8-sig")
     pd.DataFrame({"customerID": ids.iloc[train_idx].to_numpy(), "actual_churn": y_train.to_numpy(),
@@ -511,6 +594,7 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42, *,
     segments.to_csv(output / "segment_summary.csv", index=False, encoding="utf-8-sig")
     inference.to_csv(output / "segment_inference.csv", index=False, encoding="utf-8-sig")
     cross_segments.to_csv(output / "contract_tenure_segments.csv", index=False, encoding="utf-8-sig")
+    pareto.to_csv(output / "segment_pareto.csv", index=False, encoding="utf-8-sig")
     budget_count = int(len(y_test) * metrics["名额比例"])
     selected_probability = model_scores[selected_model]
     selected_order = np.lexsort((test_ids.to_numpy(dtype=str), -selected_probability))
@@ -558,23 +642,43 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42, *,
     # 名额敏感性分析
     logging.info("正在进行名额敏感性分析...")
     train_budget = budget_table(y_train, oof_probabilities[selected_model], ids.iloc[train_idx],
-                                X_train["MonthlyCharges"])
+                                X_train["MonthlyCharges"], rank_by_value=False)
+    train_budget_value = budget_table(y_train, oof_probabilities[selected_model], ids.iloc[train_idx],
+                                      X_train["MonthlyCharges"], rank_by_value=True)
     optimal_k = select_budget(train_budget)
+    optimal_k_value = select_budget(train_budget_value)
     train_budget.to_csv(output / "budget_training_oof.csv", index=False, encoding="utf-8-sig")
-    business_scenarios(y_train, oof_probabilities[selected_model], ids.iloc[train_idx],
-                       X_train["MonthlyCharges"]).to_csv(
-                           output / "business_scenarios.csv", index=False, encoding="utf-8-sig")
+    train_budget_value.to_csv(output / "budget_training_oof_value.csv", index=False, encoding="utf-8-sig")
+    risk_scenarios = business_scenarios(
+        y_train, oof_probabilities[selected_model], ids.iloc[train_idx],
+        X_train["MonthlyCharges"])
+    value_scenarios = business_scenarios(
+        y_train, oof_probabilities[selected_model], ids.iloc[train_idx],
+        X_train["MonthlyCharges"], rank_by_value=True)
+    scenarios = risk_scenarios.copy()
+    scenarios["价值排序选择K"] = value_scenarios["训练OOF选择K"]
+    scenarios["价值排序情景净收益"] = value_scenarios["训练OOF情景净收益"]
+    scenarios.to_csv(output / "business_scenarios.csv", index=False, encoding="utf-8-sig")
     sensitivity_df, _ = budget_sensitivity_analysis(
         y_test, selected_probability, test_ids, output,
         monthly_values=X_test["MonthlyCharges"], selected_k=optimal_k)
+    value_sensitivity, _ = budget_sensitivity_analysis(
+        y_test, selected_probability, test_ids, output,
+        monthly_values=X_test["MonthlyCharges"], selected_k=optimal_k_value, rank_by_value=True,
+        output_name="budget_sensitivity_value.csv", curve_name="budget_curve_value.png")
     frozen = sensitivity_df.loc[np.isclose(sensitivity_df["K比例"], optimal_k)].iloc[0]
+    frozen_value = value_sensitivity.loc[
+        np.isclose(value_sensitivity["K比例"], optimal_k_value)
+    ].iloc[0]
     metrics["名额敏感性"] = {
         "训练OOF选择名额比例": optimal_k,
+        "训练OOF价值排序选择名额比例": optimal_k_value,
         "冻结名额测试集情景净收益": float(frozen["期望净收益"]),
+        "冻结价值排序测试集情景净收益": float(frozen_value["期望净收益"]),
         "选择来源": "仅训练集嵌套折外预测，测试集不选K",
         "月值口径": "客户MonthlyCharges收入代理，非利润/CLV",
         "假设": {"触达成本": 50, "剩余月数": 12, "成功率": 0.3},
-        "详见": "budget_sensitivity.csv"
+        "详见": ["budget_sensitivity.csv", "budget_sensitivity_value.csv"]
     }
     pd.DataFrame(model_comparisons).to_csv(
         output / "model_comparison_test.csv", index=False, encoding="utf-8-sig")
@@ -616,7 +720,8 @@ def run_pipeline(frame, output_dir, test_size=0.2, random_state=42, *,
         tree_name = "LightGBM" if selected_model == "LightGBM" else "随机森林"
         shap_model = models[tree_name]
         metrics["SHAP模型"] = tree_name + "（未校准基模型，不解释校准映射）"
-        explain_shap(shap_model, X_test, shap_model.named_steps["preprocess"].get_feature_names_out(), output)
+        explain_shap(shap_model, X_test, shap_model.named_steps["preprocess"].get_feature_names_out(),
+                     output, X_test_raw=X_test)
     else:
         metrics["模型解释"] = "本次配置跳过，非运行失败"
 

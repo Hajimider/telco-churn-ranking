@@ -31,6 +31,18 @@ FEATURE_LABELS = {
     "StreamingMovies": "流媒体电影", "PhoneService": "电话服务", "MultipleLines": "多线路服务",
     "Partner": "是否有伴侣", "Dependents": "是否有家属", "gender": "性别",
     "PaperlessBilling": "无纸化账单",
+    "charges_deviation": "费用偏差（实缴 vs 月费）",
+    "has_high_charges": "高月费标记（≥70元）",
+    "service_count": "增值服务开通数",
+    "has_internet": "是否开通互联网",
+    "full_protection": "全套安全防护标记",
+    "is_new_customer": "新客户标记（≤6月）",
+    "is_loyal_customer": "忠诚客户标记（≥36月）",
+    "tenure_contract_month": "月付在网时长",
+    "auto_payment": "自动扣款标记",
+    "paperless_risky": "电子账单+电子支票",
+    "has_family": "家庭客户标记",
+    "single_senior": "独居老年客户标记",
 }
 VALUE_LABELS = {
     "Month-to-month": "月付合同", "One year": "一年合同", "Two year": "两年合同",
@@ -201,6 +213,8 @@ def render_table(frame, percent_columns=(), decimal_columns=()):
             shown[column] = shown[column].map(
                 lambda value: "—" if pd.isna(value) else f"{float(value):.3f}"
             )
+    for column in shown.select_dtypes(include=["object", "string"]).columns:
+        shown[column] = shown[column].fillna("—")
     shown = shown.rename(columns=POLICY_METRIC_LABELS)
     st.markdown(
         '<div class="table-wrap">' + shown.to_html(index=False, classes="data-table", escape=True) + '</div>',
@@ -306,7 +320,7 @@ def render_model_charts(predictions, metrics):
             for column in range(2):
                 axis.text(column, row, str(matrix[row, column]), ha="center", va="center", color="#172033", fontsize=12, fontweight="bold")
         axis.spines[:].set_visible(False)
-    figure.suptitle("测试集混淆矩阵（训练OOF阈值）" if metrics.get("报告版本", 0) >= 3 else "测试集混淆矩阵（0.5阈值）", color="#172033", fontsize=14, fontweight="bold")
+    figure.suptitle("历史留出集混淆矩阵（训练OOF阈值）" if metrics.get("报告版本", 0) >= 3 else "历史留出集混淆矩阵（0.5阈值）", color="#172033", fontsize=14, fontweight="bold")
     figure.tight_layout()
     st.pyplot(figure, width="stretch")
     plt.close(figure)
@@ -344,15 +358,18 @@ def report_label(path):
 
 def feature_label(value):
     value = str(value)
-    if "__" in value:
-        _, value = value.split("__", 1)
-    for name in sorted(FEATURE_LABELS, key=len, reverse=True):
-        if value == name:
-            return FEATURE_LABELS[name]
-        if value.startswith(name + "_"):
-            category = value[len(name) + 1:]
-            return f"{FEATURE_LABELS[name]}：{VALUE_LABELS.get(category, category)}"
-    return value
+    prefix, separator, bare = value.partition("__")
+    if not separator:
+        bare = value
+        prefix = ""
+    if bare in FEATURE_LABELS:
+        return FEATURE_LABELS[bare]
+    if prefix == "categorical":
+        for name in sorted(FEATURE_LABELS, key=len, reverse=True):
+            if bare.startswith(name + "_"):
+                category = bare[len(name) + 1:]
+                return f"{FEATURE_LABELS[name]}：{VALUE_LABELS.get(category, category)}"
+    return bare
 
 
 def ai_display_frame(row):
@@ -494,7 +511,7 @@ selected_model_metrics = metrics["模型"][selected_model]
 selected_policy = policy.loc[policy["策略"].eq(selected_model)].iloc[0]
 current_method = metrics.get("报告版本", 0) >= 3
 if not current_method:
-    st.warning("历史报告：使用旧调参/检验流程，不能视为嵌套验证结果。旧生存与测试集最优名额不作为业务结论。")
+    st.warning("历史报告：使用旧调参/检验流程，不能视为嵌套验证结果。旧生存与留出集最优名额不作为业务结论。")
 
 if selected_page == "报告总览":
     st.markdown('<div class="section-kicker">客户留存分析 · 风险工作台</div>', unsafe_allow_html=True)
@@ -503,14 +520,14 @@ if selected_page == "报告总览":
     st.markdown(
         '<div class="status-strip"><span class="status-chip">● 离线评估</span>'
         f'<span>主模型：<strong>{escape(selected_model)}</strong></span>'
-        f'<span>测试集：<strong>{metrics["测试集样本数"]:,}</strong> 名客户</span>'
+        f'<span>历史留出集：<strong>{metrics["测试集样本数"]:,}</strong> 名客户</span>'
         f'<span>固定触达容量：<strong>{metrics["名额比例"]:.0%}</strong></span>'
         '<span>公开数据 · 离线结果</span></div>',
         unsafe_allow_html=True,
     )
     with st.container(horizontal=True):
         st.metric("客户总量", f"{metrics['样本数']:,}", border=True)
-        st.metric("测试集 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
+        st.metric("历史留出 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
         st.metric(
             POLICY_METRIC_LABELS["Precision@K"], f"{selected_policy['Precision@K']:.1%}", border=True,
             help="优先名单中历史流失客户所占比例。",
@@ -520,7 +537,7 @@ if selected_page == "报告总览":
             help="优先名单命中率相对于随机选择的提升倍数。",
         )
     st.info(
-        f"在测试集 {metrics['测试集样本数']:,} 名客户中，主模型将 {int(selected_policy['名额']):,} 人列为优先触达对象，"
+        f"在历史留出集 {metrics['测试集样本数']:,} 名客户中，主模型将 {int(selected_policy['名额']):,} 人列为优先触达对象，"
         f"其中 {int(selected_policy['命中流失']):,} 人的历史标签为流失。"
     )
     with st.expander("数据来源与评估口径"):
@@ -566,15 +583,15 @@ elif selected_page == "客户差异":
 
 elif selected_page == "模型验证":
     cv = metrics["交叉验证"]
-    page_header("模型验证", "比较候选模型的交叉验证表现和固定测试集结果。")
+    page_header("模型验证", "比较嵌套交叉验证结果，并查看历史留出集描述性指标。")
     with st.container(horizontal=True):
         st.metric("主模型", selected_model, border=True)
         st.metric("外层 AP 均值", f"{cv['AP均值'][selected_model]:.3f}", border=True)
-        st.metric("测试集 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
-        st.metric("测试集 ROC-AUC", f"{selected_model_metrics['ROC-AUC']:.3f}", border=True)
+        st.metric("留出集 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
+        st.metric("留出集 ROC-AUC", f"{selected_model_metrics['ROC-AUC']:.3f}", border=True)
     st.caption(f"训练集 {cv['折数']} 折 × {cv.get('重复次数', 1)} 次重复；"
                f"流程：{cv.get('方法', '历史普通CV')}。按外层平均 AP 选择：{cv['选择模型']}。"
-               "测试集没有参与选择；折间标准差不是均值置信区间。")
+               "当前流程按外层 AP 选模；折间标准差不是均值置信区间。")
     cv_frame = pd.DataFrame({
         "模型": list(cv["AP均值"]),
         "外层 AP 均值": list(cv["AP均值"].values()),
@@ -592,23 +609,31 @@ elif selected_page == "模型验证":
         "模型", "准确率", "查准率", "查全率",
         "F1", "ROC-AUC", "平均精确率 AP",
     ]]
-    st.subheader("固定测试集指标")
+    st.subheader("历史留出集指标")
     render_table(metric_frame, decimal_columns=("准确率", "查准率", "查全率", "F1", "ROC-AUC", "平均精确率 AP"))
-    st.caption("上表分类指标使用 0.5 阈值；AP 和 ROC-AUC 根据模型分数计算。")
+    st.caption("分类指标使用 0.5 阈值；AP 和 ROC-AUC 根据模型分数计算。该留出集曾用于开发，结果仅作历史描述。")
     ci_rows = []
+    budget_ratio = metrics.get("名额比例", 0.10)
+    ci_labels = {
+        "AP": "平均精确率 AP", "ROC-AUC": "ROC-AUC", "Brier": "Brier 分数",
+        "Precision": "查准率@0.5", "Recall": "查全率@0.5", "F1": "F1@0.5",
+        "Precision@K": f"Precision@{budget_ratio:.0%}",
+        "Recall@K": f"Recall@{budget_ratio:.0%}",
+    }
     for model_name, values in metrics["模型"].items():
         intervals = values.get("Bootstrap置信区间", {})
-        for metric_name in ("AP", "Precision", "Recall", "F1"):
+        for metric_name, label in ci_labels.items():
             interval = intervals.get(metric_name)
             if interval:
                 ci_rows.append({
-                    "模型": model_name, "指标": metric_name,
+                    "模型": model_name, "指标": label,
                     "均值": interval["mean"], "95%区间下限": interval["ci_lower"],
                     "95%区间上限": interval["ci_upper"],
                 })
     if ci_rows:
-        st.subheader("Bootstrap 测试集区间")
+        st.subheader("历史留出集 Bootstrap 区间")
         render_table(pd.DataFrame(ci_rows), decimal_columns=("均值", "95%区间下限", "95%区间上限"))
+        st.caption("区间条件于已拟合模型，反映当前留出样本的抽样波动；不包含训练与选模不确定性，也不能使其成为盲测。")
     comparison_file = path / "model_comparison_test.csv"
     if comparison_file.is_file():
         st.subheader("交叉验证 AP 配对检验")
@@ -622,7 +647,7 @@ elif selected_page == "模型验证":
             st.caption("历史普通配对检验未修正相关折与多重比较，不据此判断显著性。")
     for filename, title in [("ablation_summary.csv", "LR 特征消融（共用外层划分）"),
                             ("calibration_cv.csv", "训练集外层校准对照"),
-                            ("calibration_comparison.csv", "固定测试集校准对照")]:
+                            ("calibration_comparison.csv", "历史留出集校准对照")]:
         if (path / filename).is_file():
             st.subheader(title)
             st.dataframe(pd.read_csv(path / filename), hide_index=True)
@@ -634,15 +659,15 @@ elif selected_page == "模型验证":
     if all(column in full_metric_frame.columns for column in threshold_columns[1:]):
         threshold_frame = full_metric_frame[threshold_columns].rename(columns={
             "折外F1阈值": "训练集折外选择阈值",
-            "阈值测试集查准率": "测试集查准率",
-            "阈值测试集查全率": "测试集查全率",
-            "阈值测试集F1": "测试集F1",
+            "阈值测试集查准率": "留出集查准率",
+            "阈值测试集查全率": "留出集查全率",
+            "阈值测试集F1": "留出集F1",
         })
         st.subheader("训练集折外阈值对照")
         render_table(threshold_frame, decimal_columns=(
-            "训练集折外选择阈值", "测试集查准率", "测试集查全率", "测试集F1",
+            "训练集折外选择阈值", "留出集查准率", "留出集查全率", "留出集F1",
         ))
-        st.caption("阈值在训练集折外预测中按 F1 选择，再固定到测试集评估；它不代表业务成本最优。")
+        st.caption("阈值在训练集折外预测中按 F1 选择，再固定到历史留出集评估；它不代表业务成本最优。")
     else:
         st.info("此旧版报告未包含折外阈值评估。重新运行项目可生成。")
     render_model_charts(predictions, metrics)
@@ -706,7 +731,7 @@ elif selected_page == "触达排序":
         )
         st.metric(
             POLICY_METRIC_LABELS["Lift@K"], f"{selected_policy['Lift@K']:.2f}×", border=True,
-            help="优先名单命中率 ÷ 测试集整体流失率（Lift@K）。",
+            help="优先名单命中率 ÷ 历史留出集整体流失率（Lift@K）。",
         )
     render_policy_chart(policy)
     shown_policy = policy.copy()
@@ -714,8 +739,8 @@ elif selected_page == "触达排序":
         lambda value: f"{value:.0f}" if float(value).is_integer() else f"{value:.2f}"
     )
     render_table(shown_policy, percent_columns=("Precision@K", "Recall@K"), decimal_columns=("Lift@K",))
-    st.caption("各策略使用同一测试集和相同名额。随机策略为期望值，因此命中人数可能有小数。")
-    strategy = st.selectbox("查看策略的测试集示例", assignments["策略"].drop_duplicates().tolist())
+    st.caption("各策略使用同一历史留出集和相同名额。随机策略为期望值，因此命中人数可能有小数。")
+    strategy = st.selectbox("查看策略的历史留出集示例", assignments["策略"].drop_duplicates().tolist())
     sample = assignments.loc[assignments["策略"].eq(strategy)].head(30).copy()
     sample = sample.rename(columns={
         "customerID": "客户编号", "actual_churn": "实际流失标签",
@@ -726,7 +751,7 @@ elif selected_page == "触达排序":
     if current_method:
         budget = metrics.get("名额敏感性", {})
         st.info(f"情景名额仅在训练 OOF 选择：{budget.get('训练OOF选择名额比例', 0):.0%}，"
-                "冻结后才在测试集评估；与上方预设10%名额对照是两项不同评估。")
+                "冻结后才在历史留出集评估；与上方预设10%名额对照是两项不同评估。")
         if (path / "business_scenarios.csv").is_file():
             st.subheader("27 组训练折外业务假设情景")
             st.dataframe(pd.read_csv(path / "business_scenarios.csv"), hide_index=True)
@@ -739,6 +764,16 @@ elif selected_page == "触达排序":
         st.caption("净收益按示例成本、客户价值、剩余生命周期和挽留成功率假设估算，不是实测业务收益。")
     if curve_file.is_file():
         st.image(str(curve_file), width="stretch")
+    value_sensitivity_file = path / "budget_sensitivity_value.csv"
+    value_curve_file = path / "budget_curve_value.png"
+    if value_sensitivity_file.is_file():
+        st.subheader("期望价值排序对照")
+        render_table(pd.read_csv(value_sensitivity_file),
+                     percent_columns=("K比例", "Precision@K", "Recall@K"),
+                     decimal_columns=("Lift@K",))
+        st.caption("此排序将流失风险分数与月费价值代理相乘，用于比较净收益目标；不是命中人数指标。")
+    if value_curve_file.is_file():
+        st.image(str(value_curve_file), width="stretch")
 
 elif selected_page == "AI风险解读":
     page_header("AI 风险解读与触达建议", "查看优先名单中的客户资料，生成联系前需要核实的事项。")
@@ -774,9 +809,14 @@ elif selected_page == "AI风险解读":
         )
         with st.expander("客户资料与分群统计"):
             render_table(ai_display_frame(selected_row))
-        st.caption("发送给 AI 的资料不含真实流失标签。" + (
-            "分数采用训练内 sigmoid 校准，但不代表未来流失或实际干预成功概率。"
-            if current_method else "历史报告排序分数未经概率校准。"))
+        selected_calibration = metrics.get("校准决策", {}).get(selected_model, {})
+        if selected_calibration.get("使用校准模型"):
+            score_note = "分数采用训练内 sigmoid 校准，但不代表未来流失或实际干预成功概率。"
+        elif "使用校准模型" in selected_calibration:
+            score_note = "外层 CV 判定校准未改善 Brier，当前使用原始概率；不代表未来流失或实际干预成功概率。"
+        else:
+            score_note = "历史报告排序分数未经概率校准。"
+        st.caption("发送给 AI 的资料不含真实流失标签。" + score_note)
         explanations = st.session_state.setdefault("ai_explanations", {})
         # 客户资料变化后，不再展示旧资料对应的解读。
         explanation_key = (str(path), json.dumps(selected_row, sort_keys=True, ensure_ascii=False))

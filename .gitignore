@@ -14,6 +14,7 @@ venv/
 # 本机编辑器与系统文件
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 .DS_Store
@@ -29,12 +30,21 @@ Thumbs.db
 /data/*
 !/data/README.md
 
-# 保留四份完整演示报告；新训练目录默认不提交
+# 保留已有报告与本轮受控验证报告；新训练目录默认不提交
 /outputs/*
-!/outputs/project_v1/
-!/outputs/project_v2/
-!/outputs/run_optimized_v2/
-!/outputs/run_validated/
+/outputs/run_final/
+
+# Codex 过程记录只保存在本地，不作为项目交付文件
+/task_plan.md
+/findings.md
+/progress.md
+
+# 内部审计、方案和实现过程文档不作为公开项目文件
+/docs/IMPROVEMENT_PLAN.md
+/docs/OPTIMIZATION_PLAN.md
+/docs/superpowers/
+/docs/handoff/
+/telco_churn/IMPLEMENTATION_STATUS.md
 
 # 模型文件和本机数据库
 *.pkl
