@@ -113,4 +113,4 @@ Streamlit Community Cloud 的主文件为 `dashboard.py`。上传模块、依赖
 python -m pytest tests telco_churn/test_revision.py -W error -q --tb=short
 ```
 
-测试默认不需要 MySQL或远程AI；低预算 fixture 不证明完整配置的实际指标。当前代码回归为 54 项测试且要求零警告；本地通过不等于远程 CI 已通过。2026-11-17 本机实际验证版本为 Streamlit 1.61.1，项目依赖仍锁定 1.58.0；本轮未安装或升级依赖。
+测试默认不需要 MySQL或远程AI；低预算 fixture 不证明完整配置的实际指标。当前代码回归为 54 项测试且要求零警告；本地通过不等于远程 CI 已通过。Streamlit 锁定为 1.61.1，修复 Community Cloud 嵌套路由下的媒体资源 URL。
