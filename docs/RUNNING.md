@@ -93,6 +93,16 @@ python -m streamlit run dashboard.py
 
 看板按最新完整报告自动选取；可手动切换。当前权威报告为 `outputs/run_final`。
 
+PyCharm 使用现有项目解释器，新建 Python 运行配置：运行目标选“模块名称”，填写 `streamlit`；参数填写 `run dashboard.py -- --output outputs/run_final`；工作目录选仓库根目录。点击运行后打开控制台给出的本地地址。
+
+如需重新拍摄 Demo，先启动看板，再使用已安装 Playwright 和 Chromium 的环境运行：
+
+```bash
+python scripts/capture_demo.py --output-dir docs/ui-after
+```
+
+该脚本只访问已运行的本地看板，不训练、不点击 AI 生成。若需使用本机浏览器，通过 `--browser` 指定已有浏览器程序。默认拍摄六页桌面首屏和总览手机首屏；Streamlit 主区域内部滚动，因此浏览器的整页截图不等于整段分析内容。
+
 AI 属于可选展示层，不参与训练或排序。未配置时用本地模板；配置 `CHURN_AI_BASE_URL/MODEL/API_KEY/TIMEOUT_SECONDS` 后，点击按钮才发送允许字段。不要在演示真实客户时向第三方发送个人资料，真实标签不发送。AI 输出需要人工核对，不能用于证明模型效果。
 
 Streamlit Community Cloud 的主文件为 `dashboard.py`。上传模块、依赖、字体及同一次完整运行报告；凭据使用平台 Secrets，勿上传 `.env`。云端读取报告，不运行完整训练。
@@ -103,4 +113,4 @@ Streamlit Community Cloud 的主文件为 `dashboard.py`。上传模块、依赖
 python -m pytest tests telco_churn/test_revision.py -W error -q --tb=short
 ```
 
-测试默认不需要 MySQL或远程AI；低预算 fixture 不证明完整配置的实际指标。当前代码回归为 53 项测试且要求零警告；本地通过不等于远程 CI 已通过。
+测试默认不需要 MySQL或远程AI；低预算 fixture 不证明完整配置的实际指标。当前代码回归为 54 项测试且要求零警告；本地通过不等于远程 CI 已通过。2026-11-17 本机实际验证版本为 Streamlit 1.61.1，项目依赖仍锁定 1.58.0；本轮未安装或升级依赖。

@@ -66,121 +66,134 @@ POLICY_METRIC_LABELS = {
     "Recall@K": "流失客户覆盖率",
     "Lift@K": "相对随机提升倍数",
 }
+MODEL_COLORS = {"逻辑回归": "#006b40", "随机森林": "#bf754e", "LightGBM": "#2465ad"}
 
 
 def inject_styles():
-    """设置看板样式，包括浅色控件和中文标签颜色。"""
+    """沿用暖白与青绿，统一工作台的展示层样式。"""
     st.markdown(
         """
         <style>
         :root {
-            --heading: #243b3a;
-            --sidebar: #fbf8f3;
-            --teal: #176b63;
-            --ink: #263238;
-            --muted: #596560;
-            --line: #ded6cb;
-            --surface: #fffdf9;
-            --canvas: #f5f1eb;
-            --danger: #a94a3e;
-            --warning: #a36a2f;
-            --success: #3f7456;
+            --heading:#243b3a; --sidebar:#fbf8f3; --teal:#176b63;
+            --ink:#263238; --muted:#596560; --line:#ded6cb;
+            --surface:#fffdf9; --canvas:#f5f1eb; --accent:#e7f0ec;
+            --danger:#a94a3e; --warning:#a36a2f; --success:#3f7456;
         }
-        .stApp { background: var(--canvas); color: var(--ink); }
-        [data-testid="stHeader"] { background:transparent !important; height:0 !important; min-height:0 !important; pointer-events:none; }
-        [data-testid="stToolbar"] { background:transparent !important; pointer-events:none; }
-        [data-testid="stToolbarActions"], [data-testid="stAppDeployButton"],
-        [data-testid="stMainMenu"], [data-testid="stStatusWidget"] { display:none !important; }
-        [data-testid="stExpandSidebarButton"] { position:fixed; top:.75rem; left:.75rem; pointer-events:auto; }
-        [data-testid="stHeader"] button { pointer-events:auto; }
-        .block-container { max-width: 1440px; padding-top: 2rem; padding-bottom: 3rem; }
-        [data-testid="stSidebar"] { background: var(--sidebar); border-right: 1px solid var(--line); }
-        [data-testid="stSidebar"] section { padding-top: 1.6rem; }
-        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] { color: var(--ink); }
-        [data-testid="stSidebar"] p { color: #596560 !important; }
-        [data-testid="stSelectbox"] label,
-        [data-testid="stSelectbox"] label p,
-        [data-testid="stSelectbox"] [data-testid="stWidgetLabel"] p { color:var(--ink) !important; }
-        h1 { color: var(--heading); letter-spacing: 0; font-family: "Noto Serif SC", "Source Han Serif SC", "Microsoft YaHei", serif; font-weight: 800; margin-bottom: .2rem; }
-        h2, h3 { color: var(--heading); letter-spacing: 0; }
-        [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color:var(--muted) !important; }
-        .hero-subtitle { color:var(--muted); font-size:1rem; margin-top:0; }
-        .brand-mark { display:flex; align-items:center; gap:.65rem; margin-bottom:1.25rem; }
-        .brand-icon { width:2.25rem; height:2.25rem; border-radius:50%; display:grid; place-items:center; background:#e7f0ec; color:var(--teal); border:1px solid #76a99e; font-weight:800; }
-        .brand-name { color:var(--heading); font-size:1.05rem; font-weight:800; line-height:1.1; }
-        .brand-caption { color:var(--muted); font-size:.72rem; margin-top:.18rem; }
-        .sidebar-rule { border-top:1px solid var(--line); margin:1rem 0; }
-        .sidebar-nav { color:var(--teal); font-size:.73rem; letter-spacing:.08em; margin:.8rem 0 .55rem; }
-        .sidebar-item { color:var(--ink); padding:.55rem .65rem; border-radius:.5rem; margin:.18rem 0; font-size:.86rem; }
-        .sidebar-item.active { background:#e7f0ec; color:var(--teal); font-weight:800; border-left:3px solid var(--teal); }
-        .status-strip { display:flex; flex-wrap:wrap; gap:.65rem; align-items:center; margin:1rem 0 1.35rem; padding:.8rem 1rem; border:1px solid var(--line); border-left:4px solid var(--teal); border-radius:.65rem; background:var(--surface); color:var(--muted); font-size:.86rem; }
-        .status-chip { display:inline-flex; align-items:center; gap:.35rem; padding:.25rem .55rem; border-radius:999px; background:#e7f0ec; color:var(--teal); font-weight:700; font-size:.74rem; }
-        .section-kicker { color:var(--teal); font-size:.72rem; font-weight:800; letter-spacing:.12em; text-transform:uppercase; margin-bottom:.25rem; }
-        [data-testid="stMetric"] { background:var(--surface); border:1px solid var(--line); border-radius:.7rem; padding:1rem 1.05rem; box-shadow:0 3px 10px rgba(30,58,95,.045); }
-        [data-testid="stMetricLabel"] { color:var(--muted); }
-        [data-testid="stMetricValue"] { color:var(--heading); font-weight:800; }
-        .table-wrap { width:100%; overflow-x:auto; border:1px solid var(--line); border-radius:.65rem; background:#fff; }
-        .data-table { width:100%; border-collapse:collapse; color:var(--ink); background:#fff; font-size:.86rem; }
-        .data-table th { background:#eef5f7; color:var(--heading); font-weight:800; text-align:left; white-space:nowrap; padding:.72rem .8rem; border-bottom:1px solid #cbdde3; }
-        .data-table td { padding:.68rem .8rem; border-bottom:1px solid #e5edf2; white-space:nowrap; }
+        .stApp { background:var(--canvas); color:var(--ink);
+            font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif; }
+        .stApp [data-testid="stMarkdownContainer"], .stApp [data-testid="stCaptionContainer"] {
+            font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif; }
+        .stApp input, .stApp button, .stApp select, .stApp textarea { font-family:inherit; }
+        [data-testid="stHeader"] { background:var(--canvas); }
+        [data-testid="stAppDeployButton"], [data-testid="stMainMenu"] { display:none; }
+        .block-container { max-width:1440px; padding:2.5rem 3rem 3.5rem; }
+        [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] { gap:1.15rem; }
+        [data-testid="stSidebar"] { background:var(--sidebar); border-right:1px solid var(--line); }
+        [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-top:1.5rem; }
+        [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color:var(--muted) !important; opacity:1 !important; font-size:.81rem; line-height:1.75; }
+        h1 { color:var(--heading); font-family:"Noto Serif SC","Source Han Serif SC","Microsoft YaHei",serif;
+            font-size:2.25rem !important; font-weight:800; letter-spacing:-.035em; line-height:1.35 !important; padding-bottom:.3rem; }
+        h2, h3 { color:var(--heading); letter-spacing:-.025em; }
+        h2 { font-size:1.35rem !important; padding-top:.75rem; }
+        h3 { font-size:1.1rem !important; }
+        .hero-subtitle { color:var(--muted); font-size:.95rem; line-height:1.8; margin:0; }
+        .brand-mark { display:flex; align-items:center; gap:.7rem; margin-bottom:1rem; }
+        .brand-icon { width:2.4rem; height:2.4rem; border-radius:.7rem; display:grid; place-items:center;
+            background:var(--teal); color:var(--surface); font-weight:800; font-size:1.1rem; }
+        .brand-name { color:var(--heading); font-size:1.08rem; font-weight:800; line-height:1.4; }
+        .brand-caption { color:var(--muted); font-size:.72rem; margin-top:.15rem; }
+        .sidebar-rule { border-top:1px solid var(--line); margin:1.1rem 0; }
+        .sidebar-nav { color:var(--muted); font-size:.72rem; font-weight:600; letter-spacing:.1em; margin:1rem 0 .55rem; }
+        .sidebar-item { color:var(--heading); font-size:.9rem; font-weight:650; padding:.25rem 0; }
+        .st-key-analysis_navigation [role="radiogroup"] { flex-direction:column; gap:.25rem; }
+        .st-key-analysis_navigation label { box-sizing:border-box; width:100%; min-height:44px;
+            padding:.6rem .75rem; border:1px solid transparent; border-left:3px solid transparent;
+            border-radius:.5rem; background:transparent; transition:background .15s; }
+        .st-key-analysis_navigation label:hover { background:#f0ebe2; }
+        .st-key-analysis_navigation label:has(input:checked) { background:var(--accent); border-left-color:var(--teal); }
+        .st-key-analysis_navigation label:has(input:checked) p { color:var(--teal); font-weight:750; }
+        .st-key-analysis_navigation label:has(input:focus-visible) { outline:2px solid var(--teal); outline-offset:2px; }
+        .section-kicker { color:var(--teal); font-size:.73rem; font-weight:750; letter-spacing:.12em; margin-bottom:.2rem; }
+        .status-strip { display:flex; flex-wrap:wrap; gap:.6rem 1.25rem; align-items:center;
+            padding:.8rem 1rem; border:1px solid var(--line); border-radius:.6rem;
+            background:var(--surface); color:var(--muted); font-size:.8rem; line-height:1.8; }
+        .status-chip { display:inline-flex; align-items:center; padding:.15rem .6rem; border-radius:999px;
+            background:var(--accent); color:var(--teal); font-weight:700; font-size:.72rem; }
+        .st-key-kpi-row { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.85rem; }
+        .st-key-segment-kpis { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.85rem; }
+        .st-key-kpi-row > div, .st-key-segment-kpis > div { width:100% !important; min-width:0 !important; }
+        [data-testid="stMetric"] { height:100%; box-sizing:border-box; min-height:116px; background:var(--surface); border:1px solid var(--line);
+            border-radius:.7rem; padding:1.05rem 1.1rem; box-shadow:0 2px 7px rgba(36,59,58,.025); }
+        [data-testid="stMetricLabel"] { color:var(--muted); font-size:.8rem; }
+        [data-testid="stMetricLabel"] p { white-space:normal; font-size:.8rem; }
+        [data-testid="stMetricValue"] { color:var(--heading); font-size:1.9rem; font-weight:750; letter-spacing:-.035em;
+            font-variant-numeric:tabular-nums; }
+        .st-key-overview-evidence, .st-key-segment-evidence, .st-key-model-evidence, .st-key-policy-evidence {
+            background:var(--surface); border-color:var(--line) !important; border-radius:.75rem; padding:.25rem; }
+        [data-testid="stImage"] { background:var(--surface); border-radius:.5rem; overflow:hidden; }
+        .table-wrap { max-height:460px; overflow:auto; width:100%; border:1px solid var(--line); border-radius:.6rem;
+            background:var(--surface); scrollbar-color:#c3c7bc var(--surface); }
+        .table-wrap:focus-visible { outline:2px solid var(--teal); outline-offset:3px; }
+        .data-table { width:100%; border-collapse:collapse; color:var(--ink); background:var(--surface); font-size:.82rem; }
+        .data-table th { position:sticky; top:0; z-index:1; background:#eeeae1; color:var(--heading); font-weight:700;
+            text-align:left; white-space:nowrap; padding:.7rem .85rem; border-bottom:1px solid var(--line); }
+        .data-table td { padding:.75rem .85rem; border-bottom:1px solid #ebe5db; white-space:nowrap; }
+        .data-table th.numeric, .data-table td.numeric { text-align:right; font-variant-numeric:tabular-nums; }
         .data-table tr:last-child td { border-bottom:0; }
-        .data-table tr:hover td { background:#f5faf9; }
-        .risk-card { border:1px solid var(--line); border-left:5px solid var(--warning); border-radius:.75rem; background:var(--surface); padding:1rem 1.1rem; margin:.8rem 0 1rem; }
+        .data-table tr:hover td { background:#eff4ed; }
+        [data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:.6rem; overflow:hidden; }
+        .risk-card { border:1px solid var(--line); border-left:4px solid var(--warning); border-radius:.75rem;
+            background:var(--surface); padding:1.2rem 1.3rem; margin:.2rem 0; }
         .risk-card.high { border-left-color:var(--danger); }
         .risk-card.low { border-left-color:var(--success); }
-        .risk-label { color:var(--muted); font-size:.76rem; text-transform:uppercase; letter-spacing:.08em; }
-        .risk-value { color:var(--heading); font-size:1.35rem; font-weight:800; margin:.15rem 0; }
-        .risk-detail { color:var(--muted); font-size:.86rem; }
-        [data-testid="stRadio"] > div { gap:.5rem; flex-wrap:wrap; }
-        [data-testid="stRadio"] label { border:1px solid #cfc5b8; border-radius:.55rem; padding:.48rem .95rem; background:#fffdf9; color:var(--heading) !important; font-weight:700; }
-        [data-testid="stRadio"] input[type="radio"] { accent-color:#b86b4b; }
-        [data-testid="stRadio"] label p, [data-testid="stRadio"] label span { color:var(--heading) !important; }
-        [data-testid="stRadio"] label:has(input:checked) { background:#e7f0ec; border-color:#76a99e; color:var(--teal) !important; }
-        [data-testid="stRadio"] label:has(input:checked) p, [data-testid="stRadio"] label:has(input:checked) span { color:var(--teal) !important; }
-        .st-key-analysis_navigation [role="radiogroup"] { flex-direction:column; gap:.5rem; }
-        .st-key-analysis_navigation label { width:100%; box-sizing:border-box; }
+        .risk-label { color:var(--muted); font-size:.78rem; }
+        .risk-value { color:var(--heading); font-size:1.4rem; font-weight:750; margin:.4rem 0; }
+        .risk-detail { color:var(--muted); font-size:.85rem; line-height:1.8; font-variant-numeric:tabular-nums; }
         .st-key-ai-summary, .st-key-ai-evidence, .st-key-ai-actions, .st-key-ai-limitations {
-            background:var(--surface); border-color:var(--line) !important; border-radius:.75rem;
-        }
+            background:var(--surface); border-color:var(--line) !important; border-radius:.75rem; }
         .st-key-ai-summary { border-left:4px solid var(--teal) !important; }
         .st-key-ai-actions { background:#eef5f1; }
         .st-key-ai-limitations { background:#f8f4ec; }
-        .st-key-ai-analysis { font-family:"Microsoft YaHei", "Noto Sans SC", sans-serif; }
-        .st-key-ai-analysis [data-testid="stMarkdownContainer"] { margin-bottom:0 !important; }
-        .st-key-ai-analysis .ai-analysis-title { color:var(--heading); font-family:inherit; font-size:1rem; font-weight:750; line-height:1.5; margin:0 0 .65rem; padding:0; }
-        .st-key-ai-analysis .ai-analysis-text, .st-key-ai-analysis .ai-analysis-list { color:var(--ink); font-family:inherit; font-size:.95rem; line-height:1.85; overflow-wrap:anywhere; }
-        .st-key-ai-analysis .ai-analysis-text { margin:0; white-space:pre-line; }
-        .st-key-ai-analysis .ai-analysis-list { width:100%; box-sizing:border-box; margin:0; padding-left:1.25rem; }
+        .st-key-ai-analysis .ai-analysis-title { color:var(--heading); font-family:inherit; font-size:1rem !important;
+            font-weight:750; line-height:1.5; margin:0 0 .65rem; padding:0; }
+        .ai-analysis-text, .ai-analysis-list { color:var(--ink); font-family:inherit; font-size:.95rem; line-height:1.85; overflow-wrap:anywhere; }
+        .ai-analysis-text { margin:0; white-space:pre-line; }
+        .ai-analysis-list { width:100%; box-sizing:border-box; margin:0; padding-left:1.25rem; }
         .ai-analysis-list li { padding:.65rem .1rem; border-bottom:1px solid var(--line); white-space:pre-line; }
         .ai-analysis-list li:first-child { padding-top:0; }
         .ai-analysis-list li:last-child { border-bottom:0; padding-bottom:0; }
         .ai-analysis-list li::marker { color:var(--teal); }
-        [data-testid="stSelectbox"] [data-baseweb="select"],
-        [data-testid="stSelectbox"] [data-baseweb="select"] > div { background:#fffdf9 !important; border-color:#cfc5b8 !important; color:var(--ink) !important; }
-        [data-testid="stSelectbox"] [data-baseweb="select"] div,
-        [data-testid="stSelectbox"] [data-baseweb="select"] input,
-        [data-testid="stSelectbox"] [data-baseweb="select"] span { background-color:transparent !important; color:var(--ink) !important; -webkit-text-fill-color:var(--ink) !important; }
-        [data-testid="stSelectbox"] [data-baseweb="select"] svg { color:var(--ink) !important; fill:var(--ink) !important; }
-        [data-baseweb="popover"] [role="listbox"] { background:#fffdf9 !important; border:1px solid var(--line) !important; }
-        [data-baseweb="popover"] [role="option"],
-        [data-baseweb="popover"] [role="option"] span { background:#fffdf9 !important; color:var(--ink) !important; -webkit-text-fill-color:var(--ink) !important; }
-        [data-baseweb="popover"] [role="option"]:hover, [data-baseweb="popover"] [aria-selected="true"] { background:#e7f0ec !important; color:var(--teal) !important; }
-        .stButton > button,
-        .stButton > button[kind="primary"] { background:#e7f0ec !important; border:1px solid #76a99e !important; border-radius:.5rem; color:var(--teal) !important; font-weight:700; }
-        .stButton > button p,
-        .stButton > button span,
-        .stButton > button[kind="primary"] p,
-        .stButton > button[kind="primary"] span { color:var(--teal) !important; }
-        .stButton > button:hover,
-        .stButton > button[kind="primary"]:hover { background:#d8ebe4 !important; border-color:var(--teal) !important; color:var(--teal) !important; }
-        .stButton > button:focus,
-        .stButton > button[kind="primary"]:focus { box-shadow:0 0 0 .15rem rgba(23,107,99,.18) !important; color:var(--teal) !important; }
-        [data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:.6rem; overflow:hidden; }
-        @media (max-width: 760px) {
-            .block-container { padding:3.5rem .8rem 2rem; }
-            h1 { font-size:1.85rem; }
-            [data-testid="stSidebar"] { width:min(88vw, 320px); }
+        [data-testid="stSelectbox"] [data-baseweb="select"] > div { background:var(--surface); border-color:var(--line); min-height:44px; }
+        .stButton > button { min-height:44px; border-radius:.5rem; font-weight:650; }
+        .stButton > button[kind="primary"] { background:var(--teal); border-color:var(--teal); color:#fffdf9; }
+        .stButton > button[kind="primary"]:hover { background:#12564f; border-color:#12564f; color:#fffdf9; }
+        .stButton > button:focus-visible, [data-testid="stExpander"] summary:focus-visible {
+            outline:2px solid var(--teal); outline-offset:3px; }
+        [data-testid="stAlert"] { border:1px solid var(--line); border-radius:.6rem; }
+        [data-testid="stAlert"][data-baseweb="notification"] { font-size:.88rem; }
+        [data-testid="stExpander"] { border-color:var(--line); border-radius:.6rem; }
+        @media (max-width:1100px) {
+            .block-container { padding-left:1.5rem; padding-right:1.5rem; }
+            .st-key-kpi-row { grid-template-columns:repeat(2,minmax(0,1fr)); }
         }
+        @media (max-width:760px) {
+            .block-container { padding:1.4rem 1rem 2rem; }
+            h1 { font-size:1.75rem !important; letter-spacing:-.04em; }
+            h2 { font-size:1.2rem !important; }
+            [data-testid="stSidebar"] { width:min(88vw,320px); }
+            .st-key-segment-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
+            [data-testid="stMetric"] { min-height:110px; padding:.85rem; }
+            [data-testid="stMetricLabel"] { min-height:2.2rem; }
+            [data-testid="stMetricValue"] { font-size:1.65rem; }
+            .status-strip { gap:.4rem .8rem; padding:.7rem .8rem; }
+            .data-table { font-size:.8rem; }
+            [data-testid="stSelectbox"], [data-testid="stVerticalBlock"] { min-width:0; }
+        }
+        @media (max-width:340px) {
+            .st-key-kpi-row, .st-key-segment-kpis { grid-template-columns:1fr; }
+        }
+        @media (prefers-reduced-motion:reduce) { .st-key-analysis_navigation label { transition:none; } }
         </style>
         """,
         unsafe_allow_html=True,
@@ -188,6 +201,7 @@ def inject_styles():
 
 
 def page_header(title, description):
+    st.markdown('<div class="section-kicker">客户留存分析 · 离线评估</div>', unsafe_allow_html=True)
     st.title(title)
     st.caption(description)
 
@@ -202,7 +216,24 @@ def risk_level(score):
 
 
 def render_table(frame, percent_columns=(), decimal_columns=()):
+    """小表直接阅读，长表使用原生排序、搜索和下载；格式化不改源数据。"""
+    if len(frame) > 12:
+        formats = {
+            POLICY_METRIC_LABELS.get(column, column): st.column_config.NumberColumn(format="percent")
+            for column in percent_columns if column in frame
+        }
+        formats.update({
+            POLICY_METRIC_LABELS.get(column, column): st.column_config.NumberColumn(format="%.3f")
+            for column in decimal_columns if column in frame
+        })
+        st.dataframe(
+            frame.rename(columns=POLICY_METRIC_LABELS), hide_index=True, width="stretch",
+            height=min(440, 36 * (len(frame) + 1) + 3), column_config=formats,
+        )
+        st.caption(f"共 {len(frame):,} 行 · 点击列名排序；表格工具栏支持搜索、全屏与下载。")
+        return
     shown = frame.copy()
+    numeric_columns = set(shown.select_dtypes(include="number").columns)
     for column in percent_columns:
         if column in shown:
             shown[column] = shown[column].map(
@@ -215,21 +246,35 @@ def render_table(frame, percent_columns=(), decimal_columns=()):
             )
     for column in shown.select_dtypes(include=["object", "string"]).columns:
         shown[column] = shown[column].fillna("—")
-    shown = shown.rename(columns=POLICY_METRIC_LABELS)
+    for column in numeric_columns - set(percent_columns) - set(decimal_columns):
+        shown[column] = shown[column].map(
+            lambda value: "—" if pd.isna(value) else f"{value:,}"
+        )
+    headers = "".join(
+        f'<th scope="col" class="{"numeric" if column in numeric_columns else ""}">'
+        f'{escape(POLICY_METRIC_LABELS.get(column, str(column)))}</th>' for column in shown
+    )
+    rows = "".join(
+        "<tr>" + "".join(
+            f'<td class="{"numeric" if column in numeric_columns else ""}">{escape(str(value))}</td>'
+            for column, value in zip(shown.columns, row)
+        ) + "</tr>" for row in shown.itertuples(index=False, name=None)
+    )
     st.markdown(
-        '<div class="table-wrap">' + shown.to_html(index=False, classes="data-table", escape=True) + '</div>',
+        '<div class="table-wrap" tabindex="0" role="region" aria-label="数据明细，可横向滚动">'
+        f'<table class="data-table"><thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table></div>',
         unsafe_allow_html=True,
     )
 
 
 def _base_figure(size=(8, 3.6)):
     figure, axis = plt.subplots(figsize=size)
-    figure.patch.set_facecolor("#ffffff")
-    axis.set_facecolor("#ffffff")
+    figure.patch.set_facecolor("#fffdf9")
+    axis.set_facecolor("#fffdf9")
     axis.spines[["top", "right"]].set_visible(False)
-    axis.spines[["left", "bottom"]].set_color("#cbd5e1")
-    axis.tick_params(colors="#475569", labelsize=9)
-    axis.grid(axis="y", color="#e2e8f0", linewidth=.8)
+    axis.spines[["left", "bottom"]].set_color("#ded6cb")
+    axis.tick_params(colors="#596560", labelsize=10, length=0, pad=8)
+    axis.grid(axis="x", color="#e5ded4", linewidth=.7)
     axis.set_axisbelow(True)
     return figure, axis
 
@@ -238,14 +283,19 @@ def render_segment_chart(frame):
     figure, axis = _base_figure((8, 3.5))
     values = frame["流失率"].to_numpy(dtype=float)
     labels = frame["分群"].astype(str).tolist()
-    colors = ["#0f766e" if value < values.mean() else "#c2410c" for value in values]
-    bars = axis.barh(labels, values, color=colors, height=.52)
+    errors = None
+    if {"流失率下限", "流失率上限"}.issubset(frame.columns):
+        errors = np.array([values - frame["流失率下限"], frame["流失率上限"] - values])
+    bars = axis.barh(labels, values, color="#176b63", height=.45, xerr=errors,
+                     capsize=4, error_kw={"ecolor": "#596560", "elinewidth": 1.2})
     axis.invert_yaxis()
-    axis.set_xlim(0, max(values.max() * 1.22, .1))
+    upper = frame["流失率上限"].max() if errors is not None else values.max()
+    axis.set_xlim(0, max(upper * 1.22, .1))
     axis.xaxis.set_major_formatter(lambda value, _: f"{value:.0%}")
-    axis.set_xlabel("训练集历史流失率", color="#64748b")
-    for bar, value in zip(bars, values):
-        axis.text(value + .008, bar.get_y() + bar.get_height() / 2, f"{value:.1%}", va="center", color="#172033", fontsize=9)
+    axis.set_xlabel("训练集历史流失率", color="#596560", labelpad=10)
+    right = frame["流失率上限"].to_numpy() if errors is not None else values
+    for bar, value, endpoint in zip(bars, values, right):
+        axis.text(endpoint + .008, bar.get_y() + bar.get_height() / 2, f"{value:.1%}", va="center", color="#243b3a", fontsize=10)
     figure.tight_layout()
     st.pyplot(figure, width="stretch")
     plt.close(figure)
@@ -256,10 +306,11 @@ def render_cv_chart(cv):
     names = list(cv["AP均值"])
     values = np.array([cv["AP均值"][name] for name in names])
     errors = np.array([cv["AP标准差"][name] for name in names])
-    palette = ["#176b63", "#b86b4b", "#3b6f9c", "#7b8f45"]
-    bars = axis.barh(names, values, xerr=errors, capsize=5, color=palette[:len(names)], height=.48, error_kw={"ecolor": "#9a938a", "elinewidth": 1.2})
+    bars = axis.barh(names, values, xerr=errors, capsize=4,
+                    color=[MODEL_COLORS.get(name, "#176b63") for name in names],
+                    height=.43, error_kw={"ecolor": "#596560", "elinewidth": 1.2})
     axis.set_xlim(0, max(values + errors) * 1.25)
-    axis.set_xlabel("平均精确率 AP", color="#6f7774")
+    axis.set_xlabel("平均精确率 AP（误差线为折间标准差）", color="#596560", labelpad=10)
     axis.grid(axis="x", color="#e5ded4", linewidth=.8)
     axis.grid(axis="y", visible=False)
     for bar, value, error in zip(bars, values, errors):
@@ -273,9 +324,9 @@ def render_feature_chart(frame):
     figure, axis = _base_figure((8, 4.4))
     shown = frame.head(10).sort_values("重要性")
     bars = axis.barh(shown["特征"], shown["重要性"], color="#0f766e", height=.58)
-    axis.set_xlabel("模型特征重要性", color="#64748b")
+    axis.set_xlabel("模型特征重要性", color="#596560")
     for bar, value in zip(bars, shown["重要性"]):
-        axis.text(value + shown["重要性"].max() * .015, bar.get_y() + bar.get_height() / 2, f"{value:.3f}", va="center", fontsize=8, color="#172033")
+        axis.text(value + shown["重要性"].max() * .015, bar.get_y() + bar.get_height() / 2, f"{value:.3f}", va="center", fontsize=8, color="#243b3a")
     figure.tight_layout()
     st.pyplot(figure, width="stretch")
     plt.close(figure)
@@ -283,10 +334,11 @@ def render_feature_chart(frame):
 
 def render_policy_chart(frame):
     figure, axis = _base_figure((8, 3.8))
-    colors = ["#b86b4b" if value == frame["Precision@K"].max() else "#176b63" for value in frame["Precision@K"]]
+    colors = [MODEL_COLORS.get(name, "#8a9386") for name in frame["策略"]]
     bars = axis.barh(frame["策略"], frame["Precision@K"], color=colors, height=.52)
     axis.set_xlim(0, max(frame["Precision@K"].max() * 1.25, .1))
-    axis.set_xlabel(POLICY_METRIC_LABELS["Precision@K"], color="#6f7774")
+    axis.set_xlabel(POLICY_METRIC_LABELS["Precision@K"], color="#596560", labelpad=10)
+    axis.xaxis.set_major_formatter(lambda value, _: f"{value:.0%}")
     axis.grid(axis="x", color="#e5ded4", linewidth=.8)
     axis.grid(axis="y", visible=False)
     for bar, value in zip(bars, frame["Precision@K"]):
@@ -298,40 +350,43 @@ def render_policy_chart(frame):
 
 def render_model_charts(predictions, metrics):
     model_names = list(metrics["模型"])
-    figure, axes = plt.subplots(1, len(model_names), figsize=(5 * len(model_names), 4.1), squeeze=False)
-    axes = axes[0]
-    figure.patch.set_facecolor("#ffffff")
-    palette = ["#1e3a5f", "#0f766e", "#b86b4b", "#7b8f45"]
-    model_colors = dict(zip(model_names, palette))
-    for axis, model in zip(axes, model_names):
-        labels = predictions["actual_churn"].to_numpy(dtype=int)
-        if metrics.get("报告版本", 0) >= 3:
-            predicted = (predictions[f"{model}_probability"].to_numpy() >= metrics["模型"][model]["折外F1阈值"]).astype(int)
-        else:
-            predicted = predictions[f"{model}_prediction"].to_numpy(dtype=int)
-        matrix = confusion_matrix(labels, predicted, labels=[0, 1])
-        axis.imshow(matrix, cmap="GnBu", vmin=0, vmax=max(matrix.max(), 1))
-        axis.set_title(model, color="#172033", fontweight="bold")
-        axis.set_xticks([0, 1], ["未流失", "已流失"])
-        axis.set_yticks([0, 1], ["未流失", "已流失"])
-        axis.set_xlabel("预测结果", color="#64748b")
-        axis.set_ylabel("实际结果", color="#64748b")
-        for row in range(2):
-            for column in range(2):
-                axis.text(column, row, str(matrix[row, column]), ha="center", va="center", color="#172033", fontsize=12, fontweight="bold")
-        axis.spines[:].set_visible(False)
-    figure.suptitle("历史留出集混淆矩阵（训练OOF阈值）" if metrics.get("报告版本", 0) >= 3 else "历史留出集混淆矩阵（0.5阈值）", color="#172033", fontsize=14, fontweight="bold")
-    figure.tight_layout()
-    st.pyplot(figure, width="stretch")
-    plt.close(figure)
+    st.subheader("历史留出集混淆矩阵（训练OOF阈值）" if metrics.get("报告版本", 0) >= 3 else "历史留出集混淆矩阵（0.5阈值）")
+    with st.container(horizontal=True):
+        for model in model_names:
+            with st.container(width=280, border=True):
+                figure, axis = _base_figure((4, 3.8))
+                labels = predictions["actual_churn"].to_numpy(dtype=int)
+                if metrics.get("报告版本", 0) >= 3:
+                    predicted = (predictions[f"{model}_probability"].to_numpy() >= metrics["模型"][model]["折外F1阈值"]).astype(int)
+                else:
+                    predicted = predictions[f"{model}_prediction"].to_numpy(dtype=int)
+                matrix = confusion_matrix(labels, predicted, labels=[0, 1])
+                axis.grid(False)
+                axis.imshow(matrix, cmap="Greens", vmin=0, vmax=max(matrix.max(), 1))
+                axis.set_title(model, color="#243b3a", fontweight="bold")
+                axis.set_xticks([0, 1], ["未流失", "已流失"])
+                axis.set_yticks([0, 1], ["未流失", "已流失"])
+                axis.set_xlabel("预测结果", color="#596560")
+                axis.set_ylabel("实际结果", color="#596560")
+                for row in range(2):
+                    for column in range(2):
+                        color = "#ffffff" if matrix[row, column] > matrix.max() * .5 else "#243b3a"
+                        axis.text(column, row, str(matrix[row, column]), ha="center", va="center", color=color, fontsize=15, fontweight="bold")
+                axis.spines[:].set_visible(False)
+                figure.tight_layout()
+                st.pyplot(figure, width="stretch")
+                plt.close(figure)
 
+    st.subheader("历史留出集 ROC 曲线")
     figure, axis = _base_figure((8, 4.3))
-    for model in metrics["模型"]:
+    for index, model in enumerate(metrics["模型"]):
         false_positive, true_positive, _ = roc_curve(predictions["actual_churn"], predictions[f"{model}_probability"])
-        axis.plot(false_positive, true_positive, color=model_colors[model], linewidth=2.4, label=f"{model}（AUC {auc(false_positive, true_positive):.3f}）")
+        axis.plot(false_positive, true_positive, color=MODEL_COLORS.get(model, "#176b63"),
+                  linestyle=["-", "--", "-."][index % 3], linewidth=2,
+                  label=f"{model}（AUC {auc(false_positive, true_positive):.3f}）")
     axis.plot([0, 1], [0, 1], color="#94a3b8", linestyle="--", linewidth=1.2, label="随机基线")
-    axis.set_xlabel("误报率", color="#64748b")
-    axis.set_ylabel("召回率", color="#64748b")
+    axis.set_xlabel("误报率", color="#596560")
+    axis.set_ylabel("召回率", color="#596560")
     axis.legend(frameon=False, loc="lower right")
     figure.tight_layout()
     st.pyplot(figure, width="stretch")
@@ -428,7 +483,7 @@ st.set_page_config(
     page_title="客户流失风险工作台",
     page_icon="R",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 inject_styles()
 
@@ -463,7 +518,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown('<div class="sidebar-rule"></div><div class="sidebar-nav">当前项目</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sidebar-item active">客户流失风险</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-item">客户流失风险</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-nav">分析模块</div>', unsafe_allow_html=True)
     selected_page = st.radio(
         "分析模块",
@@ -525,7 +580,7 @@ if selected_page == "报告总览":
         '<span>公开数据 · 离线结果</span></div>',
         unsafe_allow_html=True,
     )
-    with st.container(horizontal=True):
+    with st.container(horizontal=True, key="kpi-row"):
         st.metric("客户总量", f"{metrics['样本数']:,}", border=True)
         st.metric("历史留出 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
         st.metric(
@@ -540,6 +595,11 @@ if selected_page == "报告总览":
         f"在历史留出集 {metrics['测试集样本数']:,} 名客户中，主模型将 {int(selected_policy['名额']):,} 人列为优先触达对象，"
         f"其中 {int(selected_policy['命中流失']):,} 人的历史标签为流失。"
     )
+    with st.container(border=True, key="overview-evidence"):
+        st.subheader(f"同样联系 {int(selected_policy['名额']):,} 人，排序表现如何？")
+        st.caption("同一历史留出集 · 固定容量对照 · 数值越高，名单中历史流失客户占比越高")
+        render_policy_chart(policy)
+    st.caption("主模型按训练集外层 AP 均值选择；本图为历史留出集描述，不据此重新选模。命中历史流失不代表挽留成功。")
     with st.expander("数据来源与评估口径"):
         st.write(
             f"使用公开电信客户数据。分群统计和 {metrics['交叉验证']['折数']} 折模型选择均在训练集完成。"
@@ -549,20 +609,24 @@ if selected_page == "报告总览":
 elif selected_page == "客户差异":
     page_header("训练集客户分群", "按合同、在网时长和月费比较客户规模与历史流失率。")
     summary = overall.iloc[0]
-    with st.container(horizontal=True):
+    with st.container(horizontal=True, key="segment-kpis"):
         st.metric("训练集客户数", f"{int(summary['客户数']):,}", border=True)
         st.metric("训练集流失人数", f"{int(summary['流失人数']):,}", border=True)
         st.metric("训练集流失率", f"{summary['流失率']:.1%}", border=True)
     dimension = st.selectbox("选择分群维度", segments["分群维度"].drop_duplicates().tolist())
-    chart = segments.loc[segments["分群维度"].eq(dimension), ["分群", "流失率"]].copy()
+    chart = segments.loc[segments["分群维度"].eq(dimension), [
+        column for column in ("分群", "流失率", "流失率下限", "流失率上限") if column in segments
+    ]].copy()
     contract_labels = {"Month-to-month": "月付合同", "One year": "一年合同", "Two year": "两年合同"}
     chart["分群"] = chart["分群"].replace(contract_labels)
     shown = segments.loc[segments["分群维度"].eq(dimension)].copy()
     shown["分群"] = shown["分群"].replace(contract_labels)
     shown["小样本"] = shown["小样本"].map({True: "是", False: "否"})
-    render_table(shown, percent_columns=("流失率", "流失率下限", "流失率上限"))
-    render_segment_chart(chart)
+    with st.container(border=True, key="segment-evidence"):
+        st.subheader(f"{dimension}与历史流失率")
+        render_segment_chart(chart)
     st.caption("分群仅统计训练集；区间为 95% Wilson 区间。少于 30 人的组已标记为小样本，差异不代表因果关系。")
+    render_table(shown, percent_columns=("流失率", "流失率下限", "流失率上限"))
     if not inference.empty:
         st.subheader("分群与历史流失的关联检验")
         inference_shown = inference.rename(columns={
@@ -584,7 +648,7 @@ elif selected_page == "客户差异":
 elif selected_page == "模型验证":
     cv = metrics["交叉验证"]
     page_header("模型验证", "比较嵌套交叉验证结果，并查看历史留出集描述性指标。")
-    with st.container(horizontal=True):
+    with st.container(horizontal=True, key="kpi-row"):
         st.metric("主模型", selected_model, border=True)
         st.metric("外层 AP 均值", f"{cv['AP均值'][selected_model]:.3f}", border=True)
         st.metric("留出集 AP", f"{selected_model_metrics['AP（平均精确率）']:.3f}", border=True)
@@ -597,8 +661,10 @@ elif selected_page == "模型验证":
         "外层 AP 均值": list(cv["AP均值"].values()),
         "外层 AP 标准差": [cv["AP标准差"][name] for name in cv["AP均值"]],
     })
+    with st.container(border=True, key="model-evidence"):
+        st.subheader("外层交叉验证 · 模型排序能力")
+        render_cv_chart(cv)
     render_table(cv_frame, decimal_columns=("外层 AP 均值", "外层 AP 标准差"))
-    render_cv_chart(cv)
     full_metric_frame = pd.DataFrame(metrics["模型"]).T.reset_index(names="模型")
     metric_frame = full_metric_frame.rename(columns={
         "Accuracy（准确率）": "准确率", "Precision（查准率）": "查准率",
@@ -650,7 +716,7 @@ elif selected_page == "模型验证":
                             ("calibration_comparison.csv", "历史留出集校准对照")]:
         if (path / filename).is_file():
             st.subheader(title)
-            st.dataframe(pd.read_csv(path / filename), hide_index=True)
+            st.dataframe(pd.read_csv(path / filename), hide_index=True, width="stretch")
     if (path / "calibration_pr.png").is_file():
         st.image(str(path / "calibration_pr.png"), width="stretch")
     threshold_columns = [
@@ -722,7 +788,7 @@ elif selected_page == "模型解释":
 elif selected_page == "触达排序":
     page_header(f"固定 {metrics['名额比例']:.0%} 名额下的策略对照", "联系人数相同时，哪种排序能找到更多历史流失客户？")
     st.caption(f"以下指标对应主模型：{selected_model}；表格与示例名单可用于比较其他策略。")
-    with st.container(horizontal=True):
+    with st.container(horizontal=True, key="kpi-row"):
         st.metric("优先触达名额", f"{int(selected_policy['名额']):,}", border=True)
         st.metric("命中历史流失人数", f"{int(selected_policy['命中流失']):,}", border=True)
         st.metric(
@@ -733,7 +799,9 @@ elif selected_page == "触达排序":
             POLICY_METRIC_LABELS["Lift@K"], f"{selected_policy['Lift@K']:.2f}×", border=True,
             help="优先名单命中率 ÷ 历史留出集整体流失率（Lift@K）。",
         )
-    render_policy_chart(policy)
+    with st.container(border=True, key="policy-evidence"):
+        st.subheader("同容量策略对照")
+        render_policy_chart(policy)
     shown_policy = policy.copy()
     shown_policy["命中流失"] = shown_policy["命中流失"].map(
         lambda value: f"{value:.0f}" if float(value).is_integer() else f"{value:.2f}"
@@ -754,7 +822,7 @@ elif selected_page == "触达排序":
                 "冻结后才在历史留出集评估；与上方预设10%名额对照是两项不同评估。")
         if (path / "business_scenarios.csv").is_file():
             st.subheader("27 组训练折外业务假设情景")
-            st.dataframe(pd.read_csv(path / "business_scenarios.csv"), hide_index=True)
+            st.dataframe(pd.read_csv(path / "business_scenarios.csv"), hide_index=True, width="stretch")
     sensitivity_file = path / "budget_sensitivity.csv"
     curve_file = path / "budget_curve.png"
     if sensitivity_file.is_file():

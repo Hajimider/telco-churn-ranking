@@ -5,3 +5,17 @@ backgroundColor = "#f5f1eb"
 secondaryBackgroundColor = "#fffdf9"
 textColor = "#263238"
 font = "sans serif"
+borderColor = "#ded6cb"
+dataframeBorderColor = "#ded6cb"
+dataframeHeaderBackgroundColor = "#eeeae1"
+linkColor = "#176b63"
+blueBackgroundColor = "#e7f0ec"
+blueTextColor = "#176b63"
+redColor = "#a94a3e"
+orangeColor = "#a36a2f"
+greenColor = "#3f7456"
+chartCategoricalColors = ["#006b40", "#bf754e", "#2465ad", "#8a9386"]
+
+[theme.sidebar]
+backgroundColor = "#fbf8f3"
+secondaryBackgroundColor = "#fffdf9"

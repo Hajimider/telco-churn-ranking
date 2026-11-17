@@ -9,7 +9,7 @@
 [![LightGBM](https://img.shields.io/badge/LightGBM-4.7.0-02569B)](requirements.txt)
 [![Optuna](https://img.shields.io/badge/Optuna-5.0.0-4B32C3)](requirements.txt)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.58.0-FF4B4B?logo=streamlit&logoColor=white)](dashboard.py)
-[![Tests](https://img.shields.io/badge/Pytest-53%20passed-2EA043?logo=pytest&logoColor=white)](tests/test_project.py)
+[![Tests](https://img.shields.io/badge/Pytest-54%20passed-2EA043?logo=pytest&logoColor=white)](tests/test_project.py)
 
 [结果速览](#结果速览) · [快速运行](#快速运行) · [看板页面](#看板页面) · [验证流程](#验证流程) · [实验细节](#实验细节) · [目录结构](#目录结构) · [局限说明](#局限说明)
 
@@ -21,7 +21,9 @@
 
 代码覆盖 SQL 分群检验、嵌套交叉验证、特征消融、概率校准对照和 Streamlit 看板。每个外层训练折只搜索一次基模型参数，再用固定模型交叉拟合 sigmoid 校准；阈值和预算情景只由训练集折外预测确定。
 
-![完整预算报告总览：LightGBM、历史留出AP与优先名单](docs/demo-v3-overview.png)
+![报告总览：主模型、历史留出指标与同容量策略对照](docs/ui-after/demo-v3-overview.png)
+
+界面延续暖白与青绿风格，支持手机指标重排、长表排序和搜索。[UI 审计、设计与实施交接](docs/handoff/UI_AUDIT_AND_IMPLEMENTATION.md) · [优化前总览](docs/ui-before/overview.png) · [手机预览](docs/ui-after/demo-mobile.png)。
 
 ## 结果速览
 
@@ -74,7 +76,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-共 53 项测试，覆盖脏数据拦截、外层验证隔离、单次调参与交叉拟合校准、固定名额 Bootstrap 区间、测试标签翻转不改变选择、SQLite/MySQL 分群对齐、帕累托月费敞口及看板无头渲染。
+共 54 项测试，覆盖脏数据拦截、外层验证隔离、单次调参与交叉拟合校准、固定名额 Bootstrap 区间、测试标签翻转不改变选择、SQLite/MySQL 分群对齐、帕累托月费敞口及看板无头渲染。
 
 </details>
 
@@ -85,25 +87,25 @@ python -m pytest -q
 <table>
   <tr>
     <td width="100%" valign="top">
-      <img src="docs/demo-v3-segments.png" alt="客户差异：训练集分群与Wilson区间" width="100%" style="height: auto;" />
+      <img src="docs/ui-after/demo-v3-segments.png" alt="客户差异：训练集分群与Wilson区间" width="100%" style="height: auto;" />
       <p align="center"><b>客户差异</b><br>训练集上的合同、在网时长与月费分群，附带 Wilson 区间、卡方检验 Holm 校正和 Cramér's V，避免把小样本波动当规律。</p>
     </td>
   </tr>
   <tr>
     <td width="100%" valign="top">
-      <img src="docs/demo-v3-validation.png" alt="模型验证：嵌套外层比较和历史留出集指标" width="100%" style="height: auto;" />
+      <img src="docs/ui-after/demo-v3-validation.png" alt="模型验证：嵌套外层比较和历史留出集指标" width="100%" style="height: auto;" />
       <p align="center"><b>模型验证</b><br>查看嵌套 CV 外层分布与历史留出集指标，包含模型配对检验、四组特征消融、校准曲线和 PR 曲线。</p>
     </td>
   </tr>
   <tr>
     <td width="100%" valign="top">
-      <img src="docs/demo-v3-policy.png" alt="触达排序：140人名额、106人命中和策略对照" width="100%" style="height: auto;" />
+      <img src="docs/ui-after/demo-v3-policy.png" alt="触达排序：140人名额、106人命中和策略对照" width="100%" style="height: auto;" />
       <p align="center"><b>触达排序</b><br>对比 10% 固定容量下的各策略命中人数与 Lift，另单独列出训练 OOF 选出的冻结名额和 27 组成本收益假设。</p>
     </td>
   </tr>
   <tr>
     <td width="100%" valign="top">
-      <img src="docs/demo-v3-explanation.png" alt="模型解释：逻辑回归系数与描述区间" width="100%" style="height: auto;" />
+      <img src="docs/ui-after/demo-v3-explanation.png" alt="模型解释：逻辑回归系数与描述区间" width="100%" style="height: auto;" />
       <p align="center"><b>模型解释</b><br>查看惩罚逻辑回归的标准化系数与 Bootstrap 描述区间，以及未校准树基模型的 SHAP 汇总与单样本瀑布图。</p>
     </td>
   </tr>
@@ -114,7 +116,7 @@ python -m pytest -q
 
 <br>
 
-![新版AI风险解读：当前报告的客户资料与生成入口](docs/demo-v3-ai.png)
+![AI风险解读：当前报告的客户资料与生成入口](docs/ui-after/demo-v3-ai.png)
 
 把入选客户的合同信息、费用情况、当前分数和训练集同类人群统计摆在一起，方便外呼前快速核对客户背景。
 
@@ -136,11 +138,11 @@ python -m pytest -q
 
 | 模型 | 外层 AP（均值 ± 折间 SD） | 留出集 AP | 留出集 ROC-AUC | 训练 OOF 阈值 | 留出集 F1 |
 |:---|---:|---:|---:|---:|---:|
-| LightGBM | 0.6645 ± 0.0204 | 0.6589 | 0.8459 | 0.2677 | 0.6375 |
-| 逻辑回归 | 0.6636 ± 0.0188 | 0.6498 | 0.8453 | 0.2796 | 0.6075 |
-| 随机森林 | 0.6601 ± 0.0211 | 0.6578 | 0.8464 | 0.3262 | 0.6239 |
+| LightGBM | 0.6645 ± 0.0204 | 0.6589 | 0.8462 | 0.3184 | 0.6293 |
+| 逻辑回归 | 0.6640 ± 0.0198 | 0.6538 | 0.8463 | 0.3330 | 0.6204 |
+| 随机森林 | 0.6587 ± 0.0221 | 0.6571 | 0.8479 | 0.3499 | 0.6321 |
 
-表里的标准差是 15 个外层折之间的波动，不是均值置信区间。因为交叉验证折与折之间共享训练样本，普通配对 $t$ 检验会低估标准误，这里用了 Nadeau–Bengio 方差修正加 Holm 校正：LR–RF（$p=0.799$）、LR–LightGBM（$p=0.799$）、RF–LightGBM（$p=0.623$）都没有显著差异。分类阈值按训练 OOF 最大 F1 选取，Top-K 排序本身不依赖这个阈值。
+表里的标准差是 15 个外层折之间的波动，不是均值置信区间。因为交叉验证折与折之间共享训练样本，普通配对 $t$ 检验会低估标准误，这里用了 Nadeau–Bengio 方差修正加 Holm 校正：LR–RF（$p=0.630$）、LR–LightGBM（$p=0.929$）、RF–LightGBM（$p=0.630$）都没有显著差异。分类阈值按训练 OOF 最大 F1 选取，表中 F1 使用该阈值；Top-K 排序本身不依赖这个阈值。
 
 ### 10% 容量排序与情景测算
 
@@ -148,9 +150,9 @@ python -m pytest -q
 
 | 排序方式 | 命中历史流失人数 | Precision@140 | Recall@140 | Lift@140 |
 |:---|---:|---:|---:|---:|
-| LightGBM | 106 | 75.71% | 28.07% | 2.85 |
-| 随机森林 | 107 | 76.43% | 28.61% | 2.88 |
-| 逻辑回归 | 105 | 75.00% | 28.07% | 2.83 |
+| LightGBM | 106 | 75.71% | 28.34% | 2.85 |
+| 随机森林 | 106 | 75.71% | 28.34% | 2.85 |
+| 逻辑回归 | 107 | 76.43% | 28.61% | 2.88 |
 | 短在网时长规则 | 87 | 62.14% | 23.26% | 2.34 |
 | 随机选择期望 | 37.16 | 26.54% | 9.94% | 1.00 |
 
