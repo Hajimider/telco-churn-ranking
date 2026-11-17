@@ -4,7 +4,7 @@
 
 基于 7,043 条公开电信客户数据的流失风险排序实验：外呼名额有限时，先打给谁？
 
-[在线体验 Streamlit 看板](https://telco-churn-ranking-mcemhapp7rfcnpd6cx2mdgr.streamlit.app/)
+[在线体验 Streamlit 看板](https://telco-churn-ranking.streamlit.app/)
 
 [![Python 3.10](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)](requirements.txt)
 [![scikit-learn](https://img.shields.io/badge/scikit--learn-1.7.2-F7931E?logo=scikitlearn&logoColor=white)](requirements.txt)
